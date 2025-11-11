@@ -12,6 +12,7 @@ from typing import Optional
 from .parser import extract_symbols, extract_dates
 from .fetcher import fetch_historical_prices
 from .validation import validate_extraction_results
+from .terms import extract_product_terms, summarize_product_terms
 
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
@@ -127,7 +128,46 @@ Examples:
         help="Skip validation checks"
     )
 
+    parser.add_argument(
+        "--extract-terms",
+        action="store_true",
+        help="Extract product terms (barriers, caps, participation rates, etc.)"
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable price caching"
+    )
+
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear price cache and exit"
+    )
+
+    parser.add_argument(
+        "--cache-stats",
+        action="store_true",
+        help="Show cache statistics and exit"
+    )
+
     args = parser.parse_args()
+
+    # Handle cache management commands
+    if args.clear_cache:
+        from .cache import get_cache
+        cache = get_cache()
+        cleared = cache.clear()
+        print(f"Cleared {cleared} cache entries")
+        sys.exit(0)
+
+    if args.cache_stats:
+        from .cache import get_cache
+        cache = get_cache()
+        stats = cache.get_stats()
+        print(json.dumps(stats, indent=2))
+        sys.exit(0)
 
     # Setup logging
     logger = setup_logging(verbose=args.verbose, log_file=args.log_file)
@@ -173,6 +213,19 @@ Examples:
         print(f"Error: Extraction failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Extract product terms if requested
+    product_terms = None
+    terms_summary = None
+    if args.extract_terms:
+        try:
+            logger.info("Extracting product terms")
+            product_terms = extract_product_terms(content, is_html=is_html)
+            terms_summary = summarize_product_terms(product_terms)
+            logger.info(f"Extracted {len(product_terms)} product terms")
+        except Exception as e:
+            logger.error(f"Error extracting product terms: {e}", exc_info=True)
+            product_terms = {"error": str(e)}
+
     # Prepare result
     result = {
         "indices": symbol_data["indices"],
@@ -181,6 +234,12 @@ Examples:
         "dates": date_data,
         "prices": {}
     }
+
+    # Add product terms if extracted
+    if args.extract_terms:
+        result["product_terms"] = product_terms
+        if terms_summary:
+            result["terms_summary"] = terms_summary
 
     # Validate extraction results (unless disabled)
     if not args.no_validation:
@@ -213,7 +272,13 @@ Examples:
         logger.info(f"Fetching prices for primary symbol: {primary_symbol}")
 
         try:
-            prices = fetch_historical_prices(primary_symbol, date_list, args.lookback)
+            use_cache = not args.no_cache
+            prices = fetch_historical_prices(
+                primary_symbol,
+                date_list,
+                args.lookback,
+                use_cache=use_cache
+            )
             result["prices"] = {
                 "symbol": primary_symbol,
                 "data": prices

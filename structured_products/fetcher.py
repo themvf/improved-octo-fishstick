@@ -18,6 +18,8 @@ from tenacity import (
     before_sleep_log
 )
 
+from .cache import get_cache
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,18 +66,20 @@ def rate_limit(calls_per_second: float = 2.0):
 def fetch_historical_prices(
     symbol: str,
     dates: List[str],
-    lookback_days: int = 7
+    lookback_days: int = 7,
+    use_cache: bool = True
 ) -> Dict[str, Optional[Dict[str, float]]]:
     """
     Fetch historical prices for a symbol on or prior to specified dates.
 
     Uses adjusted close prices which account for stock splits and dividends.
-    Includes automatic retry logic with exponential backoff.
+    Includes automatic retry logic with exponential backoff and optional caching.
 
     Args:
         symbol: Yahoo Finance symbol (e.g., "^GSPC")
         dates: List of ISO-formatted date strings (YYYY-MM-DD)
         lookback_days: Number of days to look back if no data on exact date
+        use_cache: Whether to use caching (default: True)
 
     Returns:
         Dictionary mapping date strings to price data:
@@ -94,6 +98,14 @@ def fetch_historical_prices(
     if not dates:
         logger.warning("No dates provided for fetching")
         return {}
+
+    # Check cache first
+    if use_cache:
+        cache = get_cache()
+        cached_data = cache.get(symbol, dates, lookback_days)
+        if cached_data is not None:
+            logger.info(f"Using cached prices for {symbol}")
+            return cached_data
 
     logger.info(f"Fetching prices for {symbol} on {len(dates)} dates")
     results = {}
@@ -161,6 +173,11 @@ def fetch_historical_prices(
             results[date_str] = None
         raise  # Re-raise for retry logic
 
+    # Store in cache if enabled
+    if use_cache:
+        cache = get_cache()
+        cache.set(symbol, dates, lookback_days, results)
+
     return results
 
 
@@ -216,7 +233,8 @@ def fetch_prices_for_multiple_symbols(
     symbols: List[str],
     dates: List[str],
     lookback_days: int = 7,
-    max_workers: int = 5
+    max_workers: int = 5,
+    use_cache: bool = True
 ) -> Dict[str, Dict[str, Optional[Dict[str, float]]]]:
     """
     Fetch historical prices for multiple symbols concurrently.
@@ -229,6 +247,7 @@ def fetch_prices_for_multiple_symbols(
         dates: List of ISO-formatted date strings
         lookback_days: Number of days to look back if no data on exact date
         max_workers: Maximum concurrent requests (default: 5)
+        use_cache: Whether to use caching (default: True)
 
     Returns:
         Dictionary mapping symbols to their price data
@@ -247,7 +266,8 @@ def fetch_prices_for_multiple_symbols(
                 fetch_historical_prices,
                 symbol,
                 dates,
-                lookback_days
+                lookback_days,
+                use_cache
             ): symbol
             for symbol in symbols
         }

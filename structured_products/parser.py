@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Common index names and their Yahoo Finance symbols
 INDEX_MAPPING = {
+    # US Major Indices
     "S&P 500": "^GSPC",
     "SPX": "^GSPC",
     "S&P500": "^GSPC",
@@ -27,14 +28,62 @@ INDEX_MAPPING = {
     "DOW JONES": "^DJI",
     "DJIA": "^DJI",
     "DOW": "^DJI",
+
+    # US Volatility
+    "VIX": "^VIX",
+    "CBOE VIX": "^VIX",
+    "VOLATILITY INDEX": "^VIX",
+
+    # US Sector Indices (Select Sector SPDRs)
+    "XLF": "XLF",  # Financials
+    "XLE": "XLE",  # Energy
+    "XLK": "XLK",  # Technology
+    "XLV": "XLV",  # Health Care
+    "XLI": "XLI",  # Industrials
+    "XLP": "XLP",  # Consumer Staples
+    "XLY": "XLY",  # Consumer Discretionary
+    "XLU": "XLU",  # Utilities
+    "XLB": "XLB",  # Materials
+    "XLRE": "XLRE",  # Real Estate
+    "XLC": "XLC",  # Communication Services
+
+    # Europe
     "FTSE 100": "^FTSE",
     "FTSE": "^FTSE",
     "DAX": "^GDAXI",
+    "CAC 40": "^FCHI",
+    "CAC": "^FCHI",
+    "IBEX 35": "^IBEX",
+    "FTSE MIB": "FTSEMIB.MI",
+    "SMI": "^SSMI",
+    "SWISS MARKET INDEX": "^SSMI",
+    "EURO STOXX 50": "^STOXX50E",
+    "STOXX50E": "^STOXX50E",
+    "STOXX 600": "^STOXX",
+
+    # Asia-Pacific
     "NIKKEI": "^N225",
     "NIKKEI 225": "^N225",
     "HANG SENG": "^HSI",
-    "EURO STOXX 50": "^STOXX50E",
-    "STOXX50E": "^STOXX50E",
+    "HSI": "^HSI",
+    "SHANGHAI COMPOSITE": "000001.SS",
+    "CSI 300": "000300.SS",
+    "CHINA A50": "^FTXIN9",
+    "FTSE CHINA A50": "^FTXIN9",
+    "KOSPI": "^KS11",
+    "SENSEX": "^BSESN",
+    "NIFTY": "^NSEI",
+    "NIFTY 50": "^NSEI",
+    "ASX 200": "^AXJO",
+    "STI": "^STI",  # Straits Times Index
+
+    # Emerging Markets
+    "MSCI EM": "EEM",
+    "MSCI EMERGING MARKETS": "EEM",
+    "BRAZIL BOVESPA": "^BVSP",
+    "BOVESPA": "^BVSP",
+    "MEXICO IPC": "^MXX",
+    "RUSSIA MOEX": "IMOEX.ME",
 }
 
 # Date-related keywords
