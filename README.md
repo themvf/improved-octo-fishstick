@@ -1,20 +1,43 @@
 # Structured Products Toolkit
 
-Utilities to extract referenced symbols/indices and key dates from structured note filings (HTML or text),
-and fetch historical prices for those dates from Yahoo Finance.
+Professional toolkit to extract symbols, dates, product terms, and identifiers from structured note filings (HTML, text, or PDF), and fetch historical prices from Yahoo Finance.
 
 ## Features
 
-- **Symbol Extraction**: Automatically detects index names (S&P 500, Russell 2000, NASDAQ, etc.) and converts them to Yahoo Finance symbols
+### Core Functionality
+- **Symbol Extraction**: Automatically detects 50+ index names (S&P 500, Russell 2000, NASDAQ, VIX, sectors, international) and converts them to Yahoo Finance symbols
 - **Date Extraction**: Finds key dates such as pricing date, trade date, valuation dates, maturity date, etc.
-- **Price Fetching**: Retrieves historical OHLCV data from Yahoo Finance for detected symbols on specified dates
-- **Flexible Input**: Supports both HTML and plain text filings, from files or stdin
-- **Symbol Override**: Allows manual specification of additional symbols
+- **Price Fetching**: Retrieves historical OHLCV data (including adjusted close) from Yahoo Finance for detected symbols on specified dates
+- **Flexible Input**: Supports HTML, plain text, and PDF filings, from files or stdin
+
+### Advanced Features
+- **Product Terms Extraction**: Extract barriers, caps, participation rates, knock-in/knock-out levels, autocall triggers, coupons, and more
+- **Security Identifiers**: Extract and validate CUSIP, ISIN, and SEDOL identifiers
+- **Business Day Calendar**: Calculate settlement dates with T+2 logic and market-specific holiday calendars
+- **PDF Support**: Extract text and tables from PDF filings (optional dependency)
+- **Data Validation**: Comprehensive validation of extracted symbols and dates with confidence scoring
+- **Price Caching**: Optional file-based caching to reduce API calls and improve performance
+- **Rate Limiting**: Built-in rate limiting and retry logic for reliable API access
 
 ## Install
 
+### Basic Installation
+
 ```bash
 pip install -r requirements.txt
+```
+
+### Optional: PDF Support
+
+For PDF file support, install pdfplumber:
+
+```bash
+pip install pdfplumber
+```
+
+Check PDF support:
+```bash
+python -m structured_products --check-pdf-support
 ```
 
 ## Quick start
@@ -22,6 +45,11 @@ pip install -r requirements.txt
 Process an HTML filing:
 ```bash
 python -m structured_products -i path/to/filing.html --pretty
+```
+
+Process a PDF filing:
+```bash
+python -m structured_products -i path/to/filing.pdf --pretty
 ```
 
 Process a text filing:
@@ -34,9 +62,29 @@ Read from stdin:
 cat filing.txt | python -m structured_products --pretty
 ```
 
-Alternative CLI entry point:
+### Extract Product Terms and Identifiers
+
 ```bash
-python -m structured_products.cli -i filing.html --pretty
+python -m structured_products -i filing.pdf \
+  --extract-terms \
+  --extract-identifiers \
+  --pretty
+```
+
+### Use Price Caching
+
+```bash
+# Enable caching (default)
+python -m structured_products -i filing.html --pretty
+
+# Disable caching
+python -m structured_products -i filing.html --no-cache --pretty
+
+# View cache stats
+python -m structured_products --cache-stats
+
+# Clear cache
+python -m structured_products --clear-cache
 ```
 
 ## Override/add symbols
@@ -79,22 +127,54 @@ The tool outputs JSON with the following structure:
         "high": 4850.43,
         "low": 4780.05,
         "close": 4839.81,
+        "adj_close": 4839.81,
         "volume": 3500000000
-      },
-      "2024-01-18": {
-        "actual_date": "2024-01-18",
-        "open": 4850.43,
-        "high": 4890.67,
-        "low": 4835.12,
-        "close": 4878.23,
-        "volume": 3200000000
       }
     }
+  },
+  "product_terms": {
+    "participation_rate": {
+      "value": 100.0,
+      "unit": "%",
+      "raw_text": "100% participation",
+      "confidence": "high"
+    },
+    "buffer": {
+      "value": 10.0,
+      "unit": "%",
+      "raw_text": "10% buffer",
+      "confidence": "high"
+    }
+  },
+  "terms_summary": {
+    "payoff_type": "buffered_participation",
+    "has_downside_protection": true,
+    "has_upside_cap": false,
+    "has_leverage": false,
+    "is_path_dependent": false,
+    "terms_extracted": 2,
+    "confidence": "high"
+  },
+  "identifiers": {
+    "cusip": "12345AB89",
+    "isin": "US12345AB890",
+    "sedol": null
+  },
+  "validation": {
+    "has_errors": false,
+    "has_warnings": false,
+    "is_valid": true,
+    "error_count": 0,
+    "warning_count": 0,
+    "date_warnings": [],
+    "symbol_warnings": []
   }
 }
 ```
 
 ### Output Fields
+
+#### Core Fields (Always Present)
 
 - **indices**: List of detected index names from the filing
 - **yahoo_symbols**: List of Yahoo Finance symbol codes (with `^` prefix for indices)
@@ -108,7 +188,35 @@ The tool outputs JSON with the following structure:
     - **high**: Highest price
     - **low**: Lowest price
     - **close**: Closing price
+    - **adj_close**: Adjusted closing price (accounts for splits and dividends) - **USE THIS FOR CALCULATIONS**
     - **volume**: Trading volume
+
+#### Optional Fields (When Requested)
+
+- **product_terms**: Product term details (with `--extract-terms`)
+  - Each term includes: value, unit, raw_text, confidence
+  - Supported terms: participation_rate, cap, floor, barrier, knock_in, knock_out, autocall, coupon, gearing, leverage, buffer, principal_protection, term_length, observation_frequency
+
+- **terms_summary**: Summary of product structure (with `--extract-terms`)
+  - **payoff_type**: Inferred payoff type (autocallable, buffered_participation, etc.)
+  - **has_downside_protection**: Boolean indicating downside protection
+  - **has_upside_cap**: Boolean indicating upside cap
+  - **has_leverage**: Boolean indicating leveraged participation
+  - **is_path_dependent**: Boolean indicating path dependency
+  - **terms_extracted**: Number of terms found
+  - **confidence**: Extraction confidence level
+
+- **identifiers**: Security identifiers (with `--extract-identifiers`)
+  - **cusip**: 9-character CUSIP (validated with check digit)
+  - **isin**: 12-character ISIN (validated with Luhn algorithm)
+  - **sedol**: 7-character SEDOL
+
+- **validation**: Validation results (unless `--no-validation`)
+  - **has_errors**: Boolean indicating if errors were found
+  - **has_warnings**: Boolean indicating if warnings were found
+  - **is_valid**: Overall validation status
+  - **date_warnings**: List of date-related warnings
+  - **symbol_warnings**: List of symbol-related warnings
 
 ## Supported Indices
 
@@ -130,16 +238,40 @@ The toolkit automatically recognizes and converts the following indices:
 ## CLI Options
 
 ```
-usage: python -m structured_products [-h] [-i INPUT] [-s SYMBOLS] [--pretty] [--lookback LOOKBACK]
+usage: python -m structured_products [-h] [-i INPUT] [-s SYMBOLS] [--pretty]
+                                     [--lookback LOOKBACK] [-v] [--log-file LOG_FILE]
+                                     [--no-validation] [--extract-terms] [--extract-identifiers]
+                                     [--no-cache] [--clear-cache] [--cache-stats]
+                                     [--max-pdf-pages MAX_PDF_PAGES] [--check-pdf-support]
+
+Extract symbols and dates from structured product filings and fetch historical prices.
 
 options:
   -h, --help            show this help message and exit
   -i INPUT, --input INPUT
-                        Path to input filing (HTML or text). If not provided, reads from stdin.
+                        Path to input filing (HTML, text, or PDF). If not provided, reads from stdin.
   -s SYMBOLS, --symbol SYMBOLS
                         Additional Yahoo Finance symbol to include (can be specified multiple times)
   --pretty              Pretty-print JSON output
   --lookback LOOKBACK   Days to look back for historical prices (default: 7)
+
+Logging:
+  -v, --verbose         Enable verbose logging (DEBUG level)
+  --log-file LOG_FILE   Path to log file (default: structured_products.log if verbose)
+
+Extraction Options:
+  --extract-terms       Extract product terms (barriers, caps, participation rates, etc.)
+  --extract-identifiers Extract security identifiers (CUSIP, ISIN, SEDOL)
+  --no-validation       Skip validation checks
+
+Caching:
+  --no-cache            Disable price caching
+  --clear-cache         Clear price cache and exit
+  --cache-stats         Show cache statistics and exit
+
+PDF Options:
+  --max-pdf-pages N     Maximum pages to extract from PDF (default: all)
+  --check-pdf-support   Check if PDF support is available and exit
 ```
 
 ## Programmatic Usage
@@ -202,12 +334,19 @@ Dates are automatically parsed from various formats:
 
 ## Requirements
 
+### Core Dependencies
+
 - Python 3.7+
-- beautifulsoup4 (HTML parsing)
-- lxml (XML/HTML parsing)
-- yfinance (Yahoo Finance API)
-- python-dateutil (Date parsing)
-- requests (HTTP requests)
+- beautifulsoup4>=4.12.0 (HTML parsing)
+- lxml>=4.9.0 (XML/HTML parsing)
+- yfinance>=0.2.0 (Yahoo Finance API)
+- python-dateutil>=2.8.0 (Date parsing)
+- requests>=2.31.0 (HTTP requests)
+- tenacity>=8.2.0 (Retry logic with exponential backoff)
+
+### Optional Dependencies
+
+- pdfplumber>=0.10.0 (PDF file support)
 
 ## License
 

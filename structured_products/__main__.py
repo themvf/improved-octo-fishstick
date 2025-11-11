@@ -13,6 +13,8 @@ from .parser import extract_symbols, extract_dates
 from .fetcher import fetch_historical_prices
 from .validation import validate_extraction_results
 from .terms import extract_product_terms, summarize_product_terms
+from .identifiers import extract_all_identifiers
+from .pdf import is_pdf_supported, read_filing_content
 
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
@@ -152,9 +154,36 @@ Examples:
         help="Show cache statistics and exit"
     )
 
+    parser.add_argument(
+        "--extract-identifiers",
+        action="store_true",
+        help="Extract security identifiers (CUSIP, ISIN, SEDOL)"
+    )
+
+    parser.add_argument(
+        "--max-pdf-pages",
+        type=int,
+        help="Maximum pages to extract from PDF (default: all)"
+    )
+
+    parser.add_argument(
+        "--check-pdf-support",
+        action="store_true",
+        help="Check if PDF support is available and exit"
+    )
+
     args = parser.parse_args()
 
-    # Handle cache management commands
+    # Handle utility commands
+    if args.check_pdf_support:
+        pdf_available = is_pdf_supported()
+        status = {
+            "pdf_support": pdf_available,
+            "message": "PDF support is available" if pdf_available else "PDF support not available. Install with: pip install pdfplumber"
+        }
+        print(json.dumps(status, indent=2))
+        sys.exit(0)
+
     if args.clear_cache:
         from .cache import get_cache
         cache = get_cache()
@@ -182,14 +211,22 @@ Examples:
             sys.exit(1)
 
         logger.info(f"Reading input from: {args.input}")
-        with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
 
-        # Detect if HTML based on file extension or content
-        is_html = (
-            input_path.suffix.lower() in ['.html', '.htm'] or
-            content.strip().startswith('<')
-        )
+        # Use read_filing_content which supports PDF, HTML, and text
+        try:
+            content, is_html = read_filing_content(
+                str(input_path),
+                max_pdf_pages=args.max_pdf_pages
+            )
+        except ImportError as e:
+            logger.error(f"PDF support not available: {e}")
+            print(f"Error: {e}", file=sys.stderr)
+            print("Install pdfplumber for PDF support: pip install pdfplumber", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error reading file: {e}", exc_info=True)
+            print(f"Error: Could not read file: {e}", file=sys.stderr)
+            sys.exit(1)
     else:
         # Read from stdin
         logger.info("Reading input from stdin")
@@ -226,6 +263,20 @@ Examples:
             logger.error(f"Error extracting product terms: {e}", exc_info=True)
             product_terms = {"error": str(e)}
 
+    # Extract identifiers if requested
+    identifiers = None
+    if args.extract_identifiers:
+        try:
+            logger.info("Extracting security identifiers")
+            identifiers = extract_all_identifiers(content, is_html=is_html)
+            if identifiers:
+                logger.info(f"Found identifiers: {', '.join(identifiers.keys())}")
+            else:
+                logger.warning("No identifiers found")
+        except Exception as e:
+            logger.error(f"Error extracting identifiers: {e}", exc_info=True)
+            identifiers = {"error": str(e)}
+
     # Prepare result
     result = {
         "indices": symbol_data["indices"],
@@ -240,6 +291,10 @@ Examples:
         result["product_terms"] = product_terms
         if terms_summary:
             result["terms_summary"] = terms_summary
+
+    # Add identifiers if extracted
+    if args.extract_identifiers and identifiers:
+        result["identifiers"] = identifiers
 
     # Validate extraction results (unless disabled)
     if not args.no_validation:

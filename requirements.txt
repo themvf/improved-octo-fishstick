@@ -1,6 +1,11 @@
+# Core dependencies
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 yfinance>=0.2.0
 python-dateutil>=2.8.0
 requests>=2.31.0
 tenacity>=8.2.0
+
+# Optional dependencies
+# For PDF support: pip install pdfplumber
+# pdfplumber>=0.10.0
