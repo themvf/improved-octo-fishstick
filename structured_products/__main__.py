@@ -15,6 +15,7 @@ from .validation import validate_extraction_results
 from .terms import extract_product_terms, summarize_product_terms
 from .identifiers import extract_all_identifiers
 from .pdf import is_pdf_supported, read_filing_content
+from .analytics import generate_analytics_summary
 
 
 def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
@@ -77,6 +78,12 @@ Examples:
 
   # Process from stdin
   cat filing.txt | python -m structured_products --pretty
+
+  # Extract terms, identifiers, and calculate analytics
+  python -m structured_products -i filing.pdf --extract-terms --extract-identifiers --calculate-analytics --pretty
+
+  # Calculate analytics with custom risk-free rate
+  python -m structured_products -i filing.html --calculate-analytics --risk-free-rate 0.045 --pretty
 
   # Override/add symbols
   python -m structured_products -i filing.html -s ^GSPC -s ^RUT --pretty
@@ -170,6 +177,26 @@ Examples:
         "--check-pdf-support",
         action="store_true",
         help="Check if PDF support is available and exit"
+    )
+
+    parser.add_argument(
+        "--calculate-analytics",
+        action="store_true",
+        help="Calculate volatility, Greeks, and risk metrics"
+    )
+
+    parser.add_argument(
+        "--volatility-windows",
+        type=str,
+        default="20,60,252",
+        help="Comma-separated volatility windows in days (default: 20,60,252)"
+    )
+
+    parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.05,
+        help="Risk-free rate for Greeks calculation (default: 0.05)"
     )
 
     args = parser.parse_args()
@@ -350,6 +377,30 @@ Examples:
         logger.warning("No symbols detected - skipping price fetch")
     elif not date_data:
         logger.warning("No dates detected - skipping price fetch")
+
+    # Calculate analytics if requested
+    if args.calculate_analytics and result.get("prices", {}).get("data"):
+        logger.info("Calculating analytics (volatility, Greeks, risk metrics)")
+        try:
+            # Parse volatility windows
+            vol_windows = [int(w.strip()) for w in args.volatility_windows.split(",")]
+
+            # Generate analytics summary
+            analytics_result = generate_analytics_summary(
+                prices_data=result["prices"],
+                product_terms=product_terms if args.extract_terms else None,
+                dates=date_data,
+                risk_free_rate=args.risk_free_rate,
+                volatility_windows=vol_windows
+            )
+
+            result["analytics"] = analytics_result
+            logger.info("Analytics calculation complete")
+
+        except Exception as e:
+            logger.error(f"Analytics calculation failed: {e}", exc_info=True)
+            print(f"Warning: Analytics calculation failed: {e}", file=sys.stderr)
+            result["analytics"] = {"error": str(e)}
 
     # Output result
     logger.info("Extraction complete - outputting results")

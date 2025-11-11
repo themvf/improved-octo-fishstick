@@ -15,6 +15,7 @@ Professional toolkit to extract symbols, dates, product terms, and identifiers f
 - **Security Identifiers**: Extract and validate CUSIP, ISIN, and SEDOL identifiers
 - **Business Day Calendar**: Calculate settlement dates with T+2 logic and market-specific holiday calendars
 - **PDF Support**: Extract text and tables from PDF filings (optional dependency)
+- **Quantitative Analytics**: Calculate historical volatility, Black-Scholes Greeks (delta, gamma, theta, vega, rho), and risk metrics
 - **Data Validation**: Comprehensive validation of extracted symbols and dates with confidence scoring
 - **Price Caching**: Optional file-based caching to reduce API calls and improve performance
 - **Rate Limiting**: Built-in rate limiting and retry logic for reliable API access
@@ -85,6 +86,26 @@ python -m structured_products --cache-stats
 
 # Clear cache
 python -m structured_products --clear-cache
+```
+
+### Calculate Analytics (Volatility, Greeks, Risk Metrics)
+
+```bash
+# Basic analytics
+python -m structured_products -i filing.html --calculate-analytics --pretty
+
+# Analytics with product terms for Greeks
+python -m structured_products -i filing.pdf \
+  --extract-terms \
+  --calculate-analytics \
+  --pretty
+
+# Custom volatility windows and risk-free rate
+python -m structured_products -i filing.html \
+  --calculate-analytics \
+  --volatility-windows 30,90,180 \
+  --risk-free-rate 0.045 \
+  --pretty
 ```
 
 ## Override/add symbols
@@ -264,6 +285,12 @@ Extraction Options:
   --extract-identifiers Extract security identifiers (CUSIP, ISIN, SEDOL)
   --no-validation       Skip validation checks
 
+Analytics:
+  --calculate-analytics Calculate volatility, Greeks, and risk metrics
+  --volatility-windows WINDOWS
+                        Comma-separated volatility windows in days (default: 20,60,252)
+  --risk-free-rate RATE Risk-free rate for Greeks calculation (default: 0.05)
+
 Caching:
   --no-cache            Disable price caching
   --clear-cache         Clear price cache and exit
@@ -343,6 +370,8 @@ Dates are automatically parsed from various formats:
 - python-dateutil>=2.8.0 (Date parsing)
 - requests>=2.31.0 (HTTP requests)
 - tenacity>=8.2.0 (Retry logic with exponential backoff)
+- numpy>=1.21.0 (Array operations for analytics)
+- scipy>=1.7.0 (Statistical functions for Greeks calculations)
 
 ### Optional Dependencies
 

@@ -5,7 +5,7 @@ Utilities to extract referenced symbols/indices and key dates from structured no
 and fetch historical prices for those dates from Yahoo Finance.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .parser import extract_symbols, extract_dates
 from .fetcher import fetch_historical_prices, fetch_prices_for_multiple_symbols
@@ -42,6 +42,15 @@ from .pdf import (
     extract_text_from_pdf,
     read_filing_content
 )
+from .analytics import (
+    calculate_realized_volatility,
+    calculate_rolling_volatilities,
+    calculate_greeks,
+    analyze_structured_product_greeks,
+    calculate_breakeven_levels,
+    calculate_risk_metrics,
+    generate_analytics_summary
+)
 
 __all__ = [
     "extract_symbols",
@@ -73,4 +82,11 @@ __all__ = [
     "is_pdf_supported",
     "extract_text_from_pdf",
     "read_filing_content",
+    "calculate_realized_volatility",
+    "calculate_rolling_volatilities",
+    "calculate_greeks",
+    "analyze_structured_product_greeks",
+    "calculate_breakeven_levels",
+    "calculate_risk_metrics",
+    "generate_analytics_summary",
 ]
