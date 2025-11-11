@@ -4,12 +4,62 @@ CLI entry point for structured products toolkit.
 
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from typing import Optional
 
 from .parser import extract_symbols, extract_dates
 from .fetcher import fetch_historical_prices
+from .validation import validate_extraction_results
+
+
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None):
+    """
+    Configure logging for the application.
+
+    Args:
+        verbose: Enable debug logging
+        log_file: Optional path to log file
+    """
+    # Set log level
+    level = logging.DEBUG if verbose else logging.INFO
+
+    # Create formatters
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    simple_formatter = logging.Formatter('%(levelname)s: %(message)s')
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    # Clear any existing handlers
+    root_logger.handlers.clear()
+
+    # Console handler (less verbose)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING if not verbose else logging.DEBUG)
+    console_handler.setFormatter(simple_formatter)
+    root_logger.addHandler(console_handler)
+
+    # File handler (more detailed)
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(level)
+        file_handler.setFormatter(detailed_formatter)
+        root_logger.addHandler(file_handler)
+    elif verbose:
+        # If verbose but no log file, add a default one
+        default_log = 'structured_products.log'
+        file_handler = logging.FileHandler(default_log)
+        file_handler.setLevel(level)
+        file_handler.setFormatter(detailed_formatter)
+        root_logger.addHandler(file_handler)
+
+    return root_logger
 
 
 def main():
@@ -27,6 +77,9 @@ Examples:
 
   # Override/add symbols
   python -m structured_products -i filing.html -s ^GSPC -s ^RUT --pretty
+
+  # Enable verbose logging
+  python -m structured_products -i filing.html --pretty -v
         """
     )
 
@@ -56,15 +109,39 @@ Examples:
         help="Days to look back for historical prices (default: 7)"
     )
 
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging (DEBUG level)"
+    )
+
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        help="Path to log file (default: structured_products.log if verbose)"
+    )
+
+    parser.add_argument(
+        "--no-validation",
+        action="store_true",
+        help="Skip validation checks"
+    )
+
     args = parser.parse_args()
+
+    # Setup logging
+    logger = setup_logging(verbose=args.verbose, log_file=args.log_file)
+    logger.info("Starting structured products extraction")
 
     # Read input content
     if args.input:
         input_path = Path(args.input)
         if not input_path.exists():
+            logger.error(f"Input file not found: {args.input}")
             print(f"Error: Input file not found: {args.input}", file=sys.stderr)
             sys.exit(1)
 
+        logger.info(f"Reading input from: {args.input}")
         with open(input_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
@@ -75,17 +152,26 @@ Examples:
         )
     else:
         # Read from stdin
+        logger.info("Reading input from stdin")
         content = sys.stdin.read()
         # Simple heuristic to detect HTML
         is_html = content.strip().startswith('<')
 
     if not content.strip():
+        logger.error("No input content provided")
         print("Error: No input content provided", file=sys.stderr)
         sys.exit(1)
 
+    logger.info(f"Processing {'HTML' if is_html else 'text'} content ({len(content)} characters)")
+
     # Extract symbols and dates
-    symbol_data = extract_symbols(content, is_html=is_html, additional_symbols=args.symbols)
-    date_data = extract_dates(content, is_html=is_html)
+    try:
+        symbol_data = extract_symbols(content, is_html=is_html, additional_symbols=args.symbols)
+        date_data = extract_dates(content, is_html=is_html)
+    except Exception as e:
+        logger.error(f"Error during extraction: {e}", exc_info=True)
+        print(f"Error: Extraction failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Prepare result
     result = {
@@ -96,10 +182,35 @@ Examples:
         "prices": {}
     }
 
+    # Validate extraction results (unless disabled)
+    if not args.no_validation:
+        logger.info("Running validation checks")
+        try:
+            validation_result = validate_extraction_results(symbol_data, date_data)
+            result["validation"] = validation_result
+
+            # Log validation summary
+            if validation_result["has_errors"]:
+                logger.error(
+                    f"Validation errors found: {validation_result['error_count']} errors, "
+                    f"{validation_result['warning_count']} warnings"
+                )
+                # Print errors to stderr
+                for warning in validation_result["date_warnings"] + validation_result["symbol_warnings"]:
+                    if warning["severity"] == "error":
+                        print(f"ERROR: {warning['message']}", file=sys.stderr)
+            elif validation_result["has_warnings"]:
+                logger.warning(f"Validation warnings: {validation_result['warning_count']}")
+        except Exception as e:
+            logger.error(f"Validation failed: {e}", exc_info=True)
+            result["validation"] = {"error": str(e)}
+
     # Fetch prices for the first Yahoo symbol if available
     if symbol_data["yahoo_symbols"] and date_data:
         primary_symbol = symbol_data["yahoo_symbols"][0]
         date_list = list(date_data.values())
+
+        logger.info(f"Fetching prices for primary symbol: {primary_symbol}")
 
         try:
             prices = fetch_historical_prices(primary_symbol, date_list, args.lookback)
@@ -107,18 +218,33 @@ Examples:
                 "symbol": primary_symbol,
                 "data": prices
             }
+            logger.info(f"Successfully fetched prices for {primary_symbol}")
         except Exception as e:
+            logger.error(f"Could not fetch prices for {primary_symbol}: {e}", exc_info=True)
             print(f"Warning: Could not fetch prices for {primary_symbol}: {e}", file=sys.stderr)
             result["prices"] = {
                 "symbol": primary_symbol,
                 "error": str(e)
             }
+    elif not symbol_data["yahoo_symbols"]:
+        logger.warning("No symbols detected - skipping price fetch")
+    elif not date_data:
+        logger.warning("No dates detected - skipping price fetch")
 
     # Output result
+    logger.info("Extraction complete - outputting results")
     if args.pretty:
         print(json.dumps(result, indent=2))
     else:
         print(json.dumps(result))
+
+    # Exit with appropriate code
+    if not args.no_validation and result.get("validation", {}).get("has_errors", False):
+        logger.warning("Exiting with code 2 due to validation errors")
+        sys.exit(2)  # Validation errors
+
+    logger.info("Completed successfully")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -2,11 +2,14 @@
 Parser module for extracting symbols and dates from structured product filings.
 """
 
+import logging
 import re
 from typing import Dict, List, Set, Optional
 from datetime import datetime
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
+
+logger = logging.getLogger(__name__)
 
 
 # Common index names and their Yahoo Finance symbols
@@ -50,6 +53,7 @@ DATE_KEYWORDS = [
 
 def extract_text_from_html(html_content: str) -> str:
     """Extract plain text from HTML content."""
+    logger.debug(f"Extracting text from HTML ({len(html_content)} characters)")
     soup = BeautifulSoup(html_content, "lxml")
     # Remove script and style elements
     for script in soup(["script", "style"]):
@@ -59,6 +63,7 @@ def extract_text_from_html(html_content: str) -> str:
     lines = (line.strip() for line in text.splitlines())
     chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
     text = " ".join(chunk for chunk in chunks if chunk)
+    logger.debug(f"Extracted {len(text)} characters of text")
     return text
 
 
@@ -77,6 +82,8 @@ def extract_symbols(content: str, is_html: bool = False, additional_symbols: Opt
         - yahoo_symbols: List of Yahoo Finance symbol codes
         - raw_tickers: List of raw ticker symbols found
     """
+    logger.info(f"Extracting symbols from {'HTML' if is_html else 'text'} content")
+
     if is_html:
         text = extract_text_from_html(content)
     else:
@@ -92,6 +99,9 @@ def extract_symbols(content: str, is_html: bool = False, additional_symbols: Opt
         if index_name.upper() in text_upper:
             detected_indices.add(index_name)
             yahoo_symbols.add(yahoo_symbol)
+            logger.debug(f"Found index: {index_name} -> {yahoo_symbol}")
+
+    logger.info(f"Detected {len(detected_indices)} known indices")
 
     # Extract ticker-like patterns (e.g., ^GSPC, AAPL, etc.)
     ticker_pattern = r'\b(\^?[A-Z]{2,5})\b'
@@ -102,16 +112,22 @@ def extract_symbols(content: str, is_html: bool = False, additional_symbols: Opt
         if match.startswith("^"):
             yahoo_symbols.add(match)
 
+    logger.info(f"Found {len(raw_tickers)} ticker-like patterns")
+
     # Add additional symbols if provided
     if additional_symbols:
+        logger.info(f"Adding {len(additional_symbols)} user-provided symbols")
         for symbol in additional_symbols:
             yahoo_symbols.add(symbol)
 
-    return {
+    result = {
         "indices": sorted(list(detected_indices)),
         "yahoo_symbols": sorted(list(yahoo_symbols)),
         "raw_tickers": sorted(list(raw_tickers)),
     }
+
+    logger.info(f"Symbol extraction complete: {len(result['yahoo_symbols'])} Yahoo symbols")
+    return result
 
 
 def extract_dates(content: str, is_html: bool = False) -> Dict[str, Optional[str]]:
@@ -125,6 +141,8 @@ def extract_dates(content: str, is_html: bool = False) -> Dict[str, Optional[str
     Returns:
         Dictionary mapping date types to ISO-formatted date strings
     """
+    logger.info(f"Extracting dates from {'HTML' if is_html else 'text'} content")
+
     if is_html:
         text = extract_text_from_html(content)
     else:
@@ -147,8 +165,10 @@ def extract_dates(content: str, is_html: bool = False) -> Dict[str, Optional[str
                 key = keyword.lower().replace(" ", "_")
                 if key not in dates:  # Only store the first occurrence
                     dates[key] = extracted_date.strftime("%Y-%m-%d")
+                    logger.debug(f"Found {keyword}: {dates[key]}")
                 break
 
+    logger.info(f"Date extraction complete: found {len(dates)} dates")
     return dates
 
 
