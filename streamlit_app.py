@@ -373,11 +373,12 @@ def extract_review_dates_from_text(text: str) -> List[dt.date]:
     dates = []
 
     # Look for "Review Dates:" or "Observation Dates:" followed by comma-separated dates
+    # Stop at natural boundaries like "subject to", "Interest Payment", etc.
     patterns = [
-        r"Review\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
-        r"Observation\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
-        r"Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
-        r"Coupon\s+Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)"
+        r"Review\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+        r"Observation\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+        r"Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+        r"Coupon\s+Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)"
     ]
 
     for pattern in patterns:
