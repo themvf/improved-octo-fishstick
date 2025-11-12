@@ -106,9 +106,9 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
     # Initial Share Price - dedicated search
     initial = None
 
-    # Strategy 1: Look for "Initial Value:" (common in many filings)
+    # Strategy 1: Look for "Initial Value:" or "Initial Value, which is $XXX" (common in many filings)
     m_init_value = re.search(
-        r"Initial\s+Value[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
+        r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         text,
         flags=re.I
     )
@@ -332,8 +332,9 @@ def parse_coupon_rate(text: str) -> Optional[float]:
 def parse_coupon_payment(text: str) -> Optional[float]:
     """Parse coupon payment in dollars per period."""
     # Look for patterns like "Contingent Interest Payment ... $37.50"
+    # Allow up to 200 chars between "Contingent Interest Payment" and the dollar amount
     m_payment = re.search(
-        r"Contingent\s+Interest\s+Payment[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         text,
         flags=re.I
     )
