@@ -1,8 +1,7 @@
 """
-Streamlit Web Application for Structured Products Toolkit
+Improved Streamlit Web Application for Structured Products Analysis
 
-A user-friendly web interface for analyzing structured product filings.
-Upload HTML/PDF/text filings and get comprehensive analysis with visualizations.
+Enhanced with sophisticated parsing logic from single_autocall_local_fixed.py
 """
 
 import streamlit as st
@@ -10,19 +9,12 @@ import json
 import tempfile
 import pandas as pd
 import plotly.graph_objects as go
+import re
+import datetime as dt
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
+from dateutil import parser as dp
 
-from structured_products import (
-    extract_symbols,
-    extract_dates,
-    fetch_historical_prices,
-    extract_product_terms,
-    summarize_product_terms,
-    extract_all_identifiers,
-    validate_extraction_results,
-    generate_analytics_summary,
-)
 from structured_products.pdf import read_filing_content, is_pdf_supported
 
 
@@ -34,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
@@ -48,12 +40,6 @@ st.markdown("""
         color: #666;
         margin-bottom: 2rem;
     }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
-    }
     .success-box {
         background-color: #d4edda;
         border-left: 5px solid #28a745;
@@ -66,21 +52,269 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
     }
-    .error-box {
-        background-color: #f8d7da;
-        border-left: 5px solid #dc3545;
-        padding: 1rem;
-        margin: 1rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
+# ========== IMPROVED PARSING FUNCTIONS (from reference code) ==========
+
+def parse_date(ds: str) -> Optional[dt.date]:
+    """Parse date string with fuzzy matching."""
+    try:
+        return dp.parse(ds, fuzzy=True).date()
+    except Exception:
+        return None
+
+
+DATE_REGEX = re.compile(r"""(?ix)
+\b(?:
+ (?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|
+ Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)
+ \s+\d{1,2},\s+\d{4}
+ | \d{4}-\d{2}-\d{2}
+ | \d{1,2}/\d{1,2}/\d{2,4}
+)\b""")
+
+
+MONEY_RE = re.compile(r"\$?\s*([0-9]{1,3}(?:[,][0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)")
+PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+
+
+def html_to_text(raw: str) -> str:
+    """Convert HTML to plain text."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(raw, "lxml")
+        return soup.get_text("\n")
+    except Exception:
+        return raw
+
+
+def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Parse initial price and threshold with sophisticated logic.
+
+    Returns: (initial, threshold_dollar, threshold_pct_of_initial)
+
+    Key improvements:
+    - Looks NEAR specific headings (tight 250-char window)
+    - Prefers precise dollar amounts immediately after heading
+    - Cross-validates $ vs % values
+    - Sanity checks to reject stray numbers
+    """
+    # Initial Share Price
+    initial = None
+    m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
+    if m_init:
+        initial = float(m_init.group(1).replace(",", ""))
+
+    threshold_dollar: Optional[float] = None
+    threshold_pct: Optional[float] = None
+
+    # 1) Prefer text right AFTER the heading (tight window)
+    for m in re.finditer(r"(downside\s+threshold\s+level|threshold\s+level|barrier\s+level)", text, flags=re.I):
+        start = m.end()  # look only AFTER the phrase
+        end = min(len(text), m.end() + 250)  # tight window
+        snippet = text[start:end]
+
+        # Prefer high-precision dollar (e.g., 178.3795)
+        m_d = re.search(r"\$?\s*([0-9]{2,5}\.[0-9]{2,5})", snippet)
+        if not m_d:
+            m_d = MONEY_RE.search(snippet)
+
+        # Percentage
+        m_p = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:of\s+the\s+initial\s+share\s+price)?",
+                       snippet, flags=re.I)
+
+        if m_d:
+            threshold_dollar = float(m_d.group(1).replace(",", ""))
+        if m_p:
+            threshold_pct = float(m_p.group(1))
+
+        if (threshold_dollar is not None) or (threshold_pct is not None):
+            break
+
+    # 2) Wider fallback if nothing found
+    if threshold_dollar is None:
+        m_any_d = re.search(r"threshold\s+level[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
+        if m_any_d:
+            threshold_dollar = float(m_any_d.group(1).replace(",", ""))
+
+    if threshold_pct is None:
+        m_any_p = re.search(r"threshold\s+level[^%]*([0-9]+(?:\.[0-9]+)?)\s*%", text, flags=re.I)
+        if m_any_p:
+            threshold_pct = float(m_any_p.group(1))
+
+    # 3) Compute $ from % if only % found
+    if threshold_dollar is None and threshold_pct is not None and initial is not None:
+        threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
+
+    # 4) Sanity cross-check when we have both
+    if (threshold_dollar is not None) and (threshold_pct is not None) and (initial is not None):
+        implied_pct = (threshold_dollar / initial) * 100.0
+        # If they disagree significantly, trust the % and recompute $
+        if abs(implied_pct - threshold_pct) > 2.0:
+            threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
+
+    return initial, threshold_dollar, threshold_pct
+
+
+def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]:
+    """Parse autocall level with context-aware search."""
+    candidates = []
+
+    # Look near autocall keywords
+    for m in re.finditer(r"(automatic(?:ally)?\s+call(?:ed)?|autocall)", text, flags=re.I):
+        start = max(0, m.start() - 250)
+        end = min(len(text), m.end() + 250)
+        candidates.append(text[start:end])
+
+    for m in re.finditer(r"(call\s+level|redemption\s+trigger)", text, flags=re.I):
+        start = max(0, m.start() - 250)
+        end = min(len(text), m.end() + 250)
+        candidates.append(text[start:end])
+
+    level = None
+    for s in candidates:
+        m_usd = MONEY_RE.search(s)
+        m_pct = PCT_RE.search(s)
+
+        if m_usd:
+            level = float(m_usd.group(1).replace(",", ""))
+            break
+        if m_pct and initial is not None:
+            level = initial * (float(m_pct.group(1)) / 100.0)
+            break
+
+    # Default: 100% of initial if mentioned
+    if level is None and initial is not None:
+        if re.search(r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s*share\s*price)", text, flags=re.I):
+            level = float(initial)
+
+    return level
+
+
+def extract_observation_dates_from_tables(html: str) -> List[dt.date]:
+    """Extract observation dates from HTML tables - much more accurate than regex."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+        dates: List[dt.date] = []
+
+        for tbl in soup.find_all("table"):
+            rows = []
+            for tr in tbl.find_all("tr"):
+                cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
+                if cells:
+                    rows.append(cells)
+
+            if not rows:
+                continue
+
+            header = rows[0]
+            idx = None
+
+            # Look for date columns
+            for j, h in enumerate(header):
+                if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date)", h, flags=re.I):
+                    idx = j
+                    break
+
+            if idx is None:
+                continue
+
+            # Extract dates from that column
+            for r in rows[1:]:
+                if idx < len(r):
+                    d = parse_date(r[idx])
+                    if d:
+                        dates.append(d)
+
+        return sorted(set(dates))
+    except Exception:
+        return []
+
+
+def parse_coupon_rate(text: str) -> Optional[float]:
+    """Parse coupon rate (per annum)."""
+    m_apr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum|p\.a\.|annual)", text, flags=re.I)
+    if m_apr:
+        return float(m_apr.group(1))
+    return None
+
+
+def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]:
+    """Comprehensive date parsing with table extraction."""
+    dates = {}
+
+    # Try table extraction first (most accurate)
+    if is_html:
+        obs_dates = extract_observation_dates_from_tables(raw_content)
+        if obs_dates:
+            dates["observation_dates"] = [d.isoformat() for d in obs_dates]
+            dates["pricing_date"] = obs_dates[0].isoformat()
+            dates["maturity_date"] = obs_dates[-1].isoformat()
+
+    # Fallback to text parsing
+    text = html_to_text(raw_content) if is_html else raw_content
+
+    # Pricing date
+    if "pricing_date" not in dates:
+        m_pricing = re.search(r"pricing\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+        if m_pricing:
+            d = parse_date(m_pricing.group(1))
+            if d:
+                dates["pricing_date"] = d.isoformat()
+
+    # Trade date
+    m_trade = re.search(r"trade\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+    if m_trade:
+        d = parse_date(m_trade.group(1))
+        if d:
+            dates["trade_date"] = d.isoformat()
+
+    # Maturity date
+    if "maturity_date" not in dates:
+        m_maturity = re.search(r"maturity\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+        if m_maturity:
+            d = parse_date(m_maturity.group(1))
+            if d:
+                dates["maturity_date"] = d.isoformat()
+
+    # Settlement date
+    m_settlement = re.search(r"settlement\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+    if m_settlement:
+        d = parse_date(m_settlement.group(1))
+        if d:
+            dates["settlement_date"] = d.isoformat()
+
+    return dates
+
+
+def detect_underlying_ticker(text: str) -> Optional[str]:
+    """Detect underlying ticker symbol."""
+    # Look for "Underlying:" or similar
+    patterns = [
+        r"underlying[^:\n]*:\s*([A-Z]{1,5})\b",
+        r"ticker[^:\n]*:\s*([A-Z]{1,5})\b",
+        r"symbol[^:\n]*:\s*([A-Z]{1,5})\b",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            return m.group(1).upper()
+
+    return None
+
+
+# ========== STREAMLIT UI FUNCTIONS ==========
+
 def display_header():
     """Display application header."""
-    st.markdown('<div class="main-header">📊 Structured Products Analyzer</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">📊 Structured Products Analyzer (Enhanced)</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sub-header">Upload EDGAR filings to extract symbols, dates, product terms, and calculate analytics</div>',
+        '<div class="sub-header">Advanced parsing with table extraction and context-aware logic</div>',
         unsafe_allow_html=True
     )
 
@@ -89,53 +323,20 @@ def display_sidebar():
     """Display sidebar with options."""
     st.sidebar.header("⚙️ Analysis Options")
 
-    # Extraction options
-    st.sidebar.subheader("Extraction")
-    extract_terms = st.sidebar.checkbox("Extract Product Terms", value=True, help="Extract barriers, caps, participation rates, etc.")
-    extract_identifiers = st.sidebar.checkbox("Extract Identifiers", value=True, help="Extract CUSIP, ISIN, SEDOL")
-
-    # Analytics options
-    st.sidebar.subheader("Analytics")
-    calculate_analytics = st.sidebar.checkbox("Calculate Analytics", value=True, help="Calculate volatility, Greeks, and risk metrics")
-
-    if calculate_analytics:
-        risk_free_rate = st.sidebar.slider(
-            "Risk-Free Rate",
-            min_value=0.0,
-            max_value=0.10,
-            value=0.05,
-            step=0.0025,
-            format="%.4f",
-            help="Annual risk-free rate for Greeks calculation"
-        )
-
-        vol_windows_str = st.sidebar.text_input(
-            "Volatility Windows (days)",
-            value="20,60,252",
-            help="Comma-separated window sizes"
-        )
-        try:
-            vol_windows = [int(w.strip()) for w in vol_windows_str.split(",")]
-        except:
-            vol_windows = [20, 60, 252]
-            st.sidebar.warning("Invalid windows, using default: 20,60,252")
-    else:
-        risk_free_rate = 0.05
-        vol_windows = [20, 60, 252]
-
-    # Price fetching options
-    st.sidebar.subheader("Price Data")
-    lookback_days = st.sidebar.slider(
-        "Lookback Days",
-        min_value=1,
-        max_value=30,
-        value=7,
-        help="Days to look back for historical prices"
+    st.sidebar.subheader("Parsing")
+    use_advanced_parsing = st.sidebar.checkbox(
+        "Use Advanced Parsing",
+        value=True,
+        help="Context-aware parsing with table extraction (recommended)"
     )
 
-    use_cache = st.sidebar.checkbox("Use Price Cache", value=True, help="Cache price data to reduce API calls")
+    st.sidebar.subheader("Analysis Type")
+    analysis_type = st.sidebar.radio(
+        "Select analysis type:",
+        ["General Extraction", "Autocallable Note Analysis"],
+        help="Autocallable analysis includes coupon scheduling and trigger detection"
+    )
 
-    # PDF options
     st.sidebar.subheader("PDF Options")
     if is_pdf_supported():
         st.sidebar.success("✅ PDF support available")
@@ -143,432 +344,155 @@ def display_sidebar():
             "Max PDF Pages",
             min_value=1,
             max_value=1000,
-            value=50,
-            help="Maximum pages to extract from PDF"
+            value=50
         )
     else:
-        st.sidebar.warning("⚠️ PDF support not available. Install: pip install pdfplumber")
+        st.sidebar.warning("⚠️ Install pdfplumber for PDF support")
         max_pdf_pages = None
 
     return {
-        "extract_terms": extract_terms,
-        "extract_identifiers": extract_identifiers,
-        "calculate_analytics": calculate_analytics,
-        "risk_free_rate": risk_free_rate,
-        "vol_windows": vol_windows,
-        "lookback_days": lookback_days,
-        "use_cache": use_cache,
+        "use_advanced_parsing": use_advanced_parsing,
+        "analysis_type": analysis_type,
         "max_pdf_pages": max_pdf_pages
     }
 
 
-def process_filing(file_content: str, is_html: bool, options: Dict[str, Any]) -> Dict[str, Any]:
-    """Process filing and return results."""
+def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]) -> Dict[str, Any]:
+    """Analyze filing with advanced parsing."""
+    result = {}
 
-    with st.spinner("🔍 Extracting symbols and dates..."):
-        # Extract symbols and dates
-        symbol_data = extract_symbols(file_content, is_html=is_html)
-        date_data = extract_dates(file_content, is_html=is_html)
+    with st.spinner("🔍 Parsing with advanced logic..."):
+        # Convert to text for analysis
+        text = html_to_text(content) if is_html else content
 
-        st.success(f"Found {len(symbol_data['yahoo_symbols'])} symbols and {len(date_data)} dates")
+        # Parse initial and threshold
+        initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
 
-    # Initialize result
-    result = {
-        "indices": symbol_data["indices"],
-        "yahoo_symbols": symbol_data["yahoo_symbols"],
-        "raw_tickers": symbol_data["raw_tickers"],
-        "dates": date_data,
-        "prices": {}
-    }
+        # Parse autocall level
+        autocall_level = parse_autocall_level(text, initial)
 
-    # Extract product terms
-    if options["extract_terms"]:
-        with st.spinner("📝 Extracting product terms..."):
-            product_terms = extract_product_terms(file_content, is_html=is_html)
-            terms_summary = summarize_product_terms(product_terms)
+        # Parse dates
+        dates = parse_dates_comprehensive(content, is_html)
 
-            if product_terms:
-                result["product_terms"] = product_terms
-                result["terms_summary"] = terms_summary
-                st.success(f"Extracted {len(product_terms)} product terms")
-    else:
-        product_terms = None
-        terms_summary = None
+        # Parse coupon rate
+        coupon_rate = parse_coupon_rate(text)
 
-    # Extract identifiers
-    if options["extract_identifiers"]:
-        with st.spinner("🔖 Extracting identifiers..."):
-            identifiers = extract_all_identifiers(file_content, is_html=is_html)
-            if any(identifiers.values()):
-                result["identifiers"] = identifiers
-                found = [k for k, v in identifiers.items() if v]
-                st.success(f"Found identifiers: {', '.join(found)}")
+        # Detect ticker
+        ticker = detect_underlying_ticker(text)
 
-    # Validate
-    with st.spinner("✅ Validating extraction..."):
-        validation_result = validate_extraction_results(symbol_data, date_data)
-        result["validation"] = validation_result
+        # Store results
+        result["initial_price"] = initial
+        result["threshold_dollar"] = threshold_dollar
+        result["threshold_pct"] = threshold_pct
+        result["autocall_level"] = autocall_level
+        result["coupon_rate_annual"] = coupon_rate
+        result["dates"] = dates
+        result["ticker"] = ticker
 
-        if validation_result["has_errors"]:
-            st.error(f"❌ Validation errors: {validation_result['error_count']}")
-        elif validation_result["has_warnings"]:
-            st.warning(f"⚠️ Validation warnings: {validation_result['warning_count']}")
-        else:
-            st.success("✅ Validation passed")
-
-    # Fetch prices
-    if symbol_data["yahoo_symbols"] and date_data:
-        primary_symbol = symbol_data["yahoo_symbols"][0]
-        date_list = list(date_data.values())
-
-        with st.spinner(f"💰 Fetching prices for {primary_symbol}..."):
-            try:
-                prices = fetch_historical_prices(
-                    primary_symbol,
-                    date_list,
-                    options["lookback_days"],
-                    use_cache=options["use_cache"]
-                )
-                result["prices"] = {
-                    "symbol": primary_symbol,
-                    "data": prices
-                }
-                st.success(f"Fetched prices for {len(prices)} dates")
-            except Exception as e:
-                st.error(f"Could not fetch prices: {e}")
-                result["prices"] = {
-                    "symbol": primary_symbol,
-                    "error": str(e)
-                }
-
-    # Calculate analytics
-    if options["calculate_analytics"] and result.get("prices", {}).get("data"):
-        with st.spinner("📊 Calculating analytics..."):
-            try:
-                analytics_result = generate_analytics_summary(
-                    prices_data=result["prices"],
-                    product_terms=product_terms,
-                    dates=date_data,
-                    risk_free_rate=options["risk_free_rate"],
-                    volatility_windows=options["vol_windows"]
-                )
-                result["analytics"] = analytics_result
-                st.success("✅ Analytics calculated")
-            except Exception as e:
-                st.error(f"Analytics calculation failed: {e}")
-                result["analytics"] = {"error": str(e)}
+        st.success("✅ Advanced parsing complete")
 
     return result
 
 
-def display_symbols_and_dates(result: Dict[str, Any]):
-    """Display extracted symbols and dates."""
-    st.header("📈 Symbols & Dates")
+def display_parsing_results(result: Dict[str, Any]):
+    """Display parsed results with edit capability."""
+    st.header("📋 Parsed Information")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("Detected Indices")
-        if result["indices"]:
-            for idx, symbol in zip(result["indices"], result["yahoo_symbols"]):
-                st.write(f"**{idx}** → `{symbol}`")
-        else:
-            st.info("No indices detected")
+        st.subheader("Pricing Parameters")
+
+        initial = st.number_input(
+            "Initial Share Price ($)",
+            value=float(result.get("initial_price") or 0),
+            format="%.4f",
+            help="Extracted initial price"
+        )
+
+        threshold_pct = st.number_input(
+            "Threshold Level (%)",
+            value=float(result.get("threshold_pct") or 0),
+            format="%.2f",
+            help="Threshold as % of initial"
+        )
+
+        threshold_dollar = st.number_input(
+            "Threshold Level ($)",
+            value=float(result.get("threshold_dollar") or 0),
+            format="%.4f",
+            help="Threshold in dollars"
+        )
+
+        autocall = st.number_input(
+            "Autocall Level ($)",
+            value=float(result.get("autocall_level") or initial or 0),
+            format="%.4f",
+            help="Autocall trigger level"
+        )
 
     with col2:
-        st.subheader("Key Dates")
-        if result["dates"]:
-            for date_type, date_value in result["dates"].items():
-                st.write(f"**{date_type.replace('_', ' ').title()}**: `{date_value}`")
-        else:
-            st.info("No dates detected")
+        st.subheader("Product Details")
 
+        coupon = st.number_input(
+            "Coupon Rate (% per annum)",
+            value=float(result.get("coupon_rate_annual") or 0),
+            format="%.2f",
+            help="Annual coupon rate"
+        )
 
-def display_product_terms(result: Dict[str, Any]):
-    """Display product terms."""
-    if "product_terms" not in result:
-        return
+        ticker = st.text_input(
+            "Underlying Ticker",
+            value=result.get("ticker") or "TICKER",
+            help="Stock ticker symbol"
+        ).upper()
 
-    st.header("📝 Product Terms")
+        notional = st.number_input(
+            "Notional Amount ($)",
+            value=1000.0,
+            format="%.2f",
+            help="Investment amount"
+        )
 
-    # Terms summary
-    if "terms_summary" in result:
-        summary = result["terms_summary"]
+        frequency = st.selectbox(
+            "Payment Frequency",
+            ["Monthly (12x)", "Quarterly (4x)", "Semi-Annual (2x)", "Annual (1x)"],
+            index=1
+        )
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Payoff Type", summary.get("payoff_type", "N/A"))
-        col2.metric("Terms Extracted", summary.get("terms_extracted", 0))
-        col3.metric("Confidence", summary.get("confidence", "N/A").upper())
+        freq_map = {"Monthly (12x)": 12, "Quarterly (4x)": 4, "Semi-Annual (2x)": 2, "Annual (1x)": 1}
+        payments_per_year = freq_map[frequency]
 
-        # Flags
-        flags = []
-        if summary.get("has_downside_protection"):
-            flags.append("🛡️ Downside Protection")
-        if summary.get("has_upside_cap"):
-            flags.append("🔒 Upside Cap")
-        if summary.get("has_leverage"):
-            flags.append("📈 Leveraged")
-        if summary.get("is_path_dependent"):
-            flags.append("🛤️ Path Dependent")
+    # Dates
+    st.subheader("Key Dates")
+    dates = result.get("dates", {})
 
-        if flags:
-            st.write("**Product Features:**")
-            st.write(" • ".join(flags))
-
-    # Detailed terms
-    st.subheader("Detailed Terms")
-
-    terms_data = []
-    for term_name, term_info in result["product_terms"].items():
-        if isinstance(term_info, dict):
-            terms_data.append({
-                "Term": term_name.replace("_", " ").title(),
-                "Value": f"{term_info.get('value', 'N/A')} {term_info.get('unit', '')}",
-                "Confidence": term_info.get("confidence", "N/A"),
-                "Raw Text": term_info.get("raw_text", "N/A")[:50]
-            })
-
-    if terms_data:
-        df = pd.DataFrame(terms_data)
-        st.dataframe(df, use_container_width=True)
-
-
-def display_identifiers(result: Dict[str, Any]):
-    """Display security identifiers."""
-    if "identifiers" not in result:
-        return
-
-    st.header("🔖 Security Identifiers")
-
-    identifiers = result["identifiers"]
+    if "observation_dates" in dates:
+        st.write(f"**Observation Dates:** {len(dates['observation_dates'])} dates detected")
+        with st.expander("View all observation dates"):
+            st.json(dates["observation_dates"])
 
     col1, col2, col3 = st.columns(3)
+    col1.metric("Pricing Date", dates.get("pricing_date", "N/A"))
+    col2.metric("Settlement Date", dates.get("settlement_date", "N/A"))
+    col3.metric("Maturity Date", dates.get("maturity_date", "N/A"))
 
-    with col1:
-        st.metric("CUSIP", identifiers.get("cusip") or "Not found")
-    with col2:
-        st.metric("ISIN", identifiers.get("isin") or "Not found")
-    with col3:
-        st.metric("SEDOL", identifiers.get("sedol") or "Not found")
-
-
-def display_prices(result: Dict[str, Any]):
-    """Display price data with chart."""
-    if not result.get("prices", {}).get("data"):
-        return
-
-    st.header("💰 Historical Prices")
-
-    prices_data = result["prices"]["data"]
-    symbol = result["prices"]["symbol"]
-
-    # Create dataframe
-    price_list = []
-    for date_str, price_info in sorted(prices_data.items()):
-        price_list.append({
-            "Date": price_info.get("actual_date", date_str),
-            "Open": price_info.get("open"),
-            "High": price_info.get("high"),
-            "Low": price_info.get("low"),
-            "Close": price_info.get("close"),
-            "Adj Close": price_info.get("adj_close"),
-            "Volume": price_info.get("volume")
-        })
-
-    if price_list:
-        df = pd.DataFrame(price_list)
-
-        # Display table
-        st.subheader(f"Price Data for {symbol}")
-        st.dataframe(df, use_container_width=True)
-
-        # Create candlestick chart
-        if len(df) > 1:
-            fig = go.Figure(data=[go.Candlestick(
-                x=df["Date"],
-                open=df["Open"],
-                high=df["High"],
-                low=df["Low"],
-                close=df["Close"],
-                name=symbol
-            )])
-
-            fig.update_layout(
-                title=f"{symbol} Price Chart",
-                yaxis_title="Price",
-                xaxis_title="Date",
-                height=400
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-
-def display_analytics(result: Dict[str, Any]):
-    """Display analytics with visualizations."""
-    if "analytics" not in result:
-        return
-
-    analytics = result["analytics"]
-
-    if "error" in analytics:
-        st.error(f"Analytics error: {analytics['error']}")
-        return
-
-    st.header("📊 Quantitative Analytics")
-
-    # Current price
-    if "current_price" in analytics:
-        st.metric("Current Price", f"${analytics['current_price']:,.2f}")
-
-    # Volatility section
-    if "volatility" in analytics:
-        st.subheader("📉 Historical Volatility")
-
-        vol = analytics["volatility"]
-
-        cols = st.columns(4)
-        metrics = [
-            ("20-Day", "vol_20d"),
-            ("60-Day", "vol_60d"),
-            ("252-Day", "vol_252d"),
-            ("Realized", "realized_vol_annualized")
-        ]
-
-        for col, (label, key) in zip(cols, metrics):
-            if vol.get(key) is not None:
-                col.metric(f"{label} Vol", f"{vol[key]:.2%}")
-
-        # Volatility chart
-        vol_data = []
-        for window in ["vol_20d", "vol_60d", "vol_252d"]:
-            if vol.get(window):
-                vol_data.append({
-                    "Window": window.replace("vol_", "").replace("d", "-day"),
-                    "Volatility": vol[window] * 100
-                })
-
-        if vol_data:
-            df_vol = pd.DataFrame(vol_data)
-            fig = go.Figure(data=[
-                go.Bar(x=df_vol["Window"], y=df_vol["Volatility"], name="Volatility")
-            ])
-            fig.update_layout(
-                title="Volatility Across Different Windows",
-                yaxis_title="Annualized Volatility (%)",
-                height=300
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-    # Risk metrics section
-    if "risk_metrics" in analytics:
-        st.subheader("⚠️ Risk Metrics")
-
-        risk = analytics["risk_metrics"]
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        if risk.get("sharpe_ratio") is not None:
-            col1.metric("Sharpe Ratio", f"{risk['sharpe_ratio']:.3f}")
-        if risk.get("max_drawdown") is not None:
-            col2.metric("Max Drawdown", f"{risk['max_drawdown']:.2%}")
-        if risk.get("value_at_risk_95") is not None:
-            col3.metric("VaR 95%", f"{risk['value_at_risk_95']:.2%}")
-        if risk.get("value_at_risk_99") is not None:
-            col4.metric("VaR 99%", f"{risk['value_at_risk_99']:.2%}")
-
-    # Greeks section
-    if "greeks" in analytics:
-        st.subheader("🔢 Option Greeks")
-
-        greeks_data = analytics["greeks"]
-
-        # Time to maturity
-        if "time_to_maturity_years" in greeks_data:
-            st.write(f"**Time to Maturity:** {greeks_data['time_to_maturity_years']:.2f} years ({greeks_data.get('time_to_maturity_days', 0):.0f} days)")
-
-        # ATM Greeks
-        if "atm_greeks" in greeks_data:
-            st.write("**At-The-Money Greeks:**")
-
-            atm = greeks_data["atm_greeks"]
-
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Delta", f"{atm.get('delta', 0):.4f}")
-            col2.metric("Gamma", f"{atm.get('gamma', 0):.6f}")
-            col3.metric("Theta", f"{atm.get('theta', 0):.4f}")
-            col4.metric("Vega", f"{atm.get('vega', 0):.4f}")
-            col5.metric("Rho", f"{atm.get('rho', 0):.4f}")
-
-        # Effective delta
-        if "effective_delta" in greeks_data:
-            st.metric("Effective Delta (Participation-Adjusted)", f"{greeks_data['effective_delta']:.4f}")
-
-        # Barrier analysis
-        if "barrier_analysis" in greeks_data:
-            st.write("**Barrier Analysis:**")
-            barrier = greeks_data["barrier_analysis"]
-
-            col1, col2 = st.columns(2)
-            col1.metric("Barrier Level", f"${barrier['barrier_level']:,.2f}")
-            col2.metric("Distance to Barrier", f"{barrier['distance_to_barrier']:.1f}%")
-
-        # Cap analysis
-        if "cap_analysis" in greeks_data:
-            st.write("**Cap Analysis:**")
-            cap = greeks_data["cap_analysis"]
-
-            col1, col2 = st.columns(2)
-            col1.metric("Cap Level", f"${cap['cap_level']:,.2f}")
-            col2.metric("Distance to Cap", f"{cap['distance_to_cap']:.1f}%")
-
-    # Breakeven levels
-    if "breakeven_levels" in analytics:
-        st.subheader("🎯 Breakeven Levels")
-
-        levels = analytics["breakeven_levels"].get("levels", {})
-
-        if levels:
-            level_data = []
-            for level_name, level_info in levels.items():
-                level_data.append({
-                    "Level": level_name.replace("_", " ").title(),
-                    "Price": f"${level_info['price']:,.2f}",
-                    "Percentage": f"{level_info['percentage']:+.1f}%",
-                    "Description": level_info["description"]
-                })
-
-            df_levels = pd.DataFrame(level_data)
-            st.dataframe(df_levels, use_container_width=True)
-
-
-def display_validation(result: Dict[str, Any]):
-    """Display validation results."""
-    if "validation" not in result:
-        return
-
-    validation = result["validation"]
-
-    if validation.get("has_errors"):
-        st.error(f"❌ **Validation Errors:** {validation['error_count']}")
-
-        for warning in validation.get("date_warnings", []) + validation.get("symbol_warnings", []):
-            if warning["severity"] == "error":
-                st.error(f"**{warning['field']}**: {warning['message']}")
-
-    elif validation.get("has_warnings"):
-        st.warning(f"⚠️ **Validation Warnings:** {validation['warning_count']}")
-
-        for warning in validation.get("date_warnings", []) + validation.get("symbol_warnings", []):
-            if warning["severity"] == "warning":
-                st.warning(f"**{warning['field']}**: {warning['message']}")
-
-    else:
-        st.success("✅ **Validation Passed:** No errors or warnings")
+    # Return updated values
+    return {
+        "initial": initial,
+        "threshold_dollar": threshold_dollar,
+        "threshold_pct": threshold_pct,
+        "autocall_level": autocall,
+        "coupon_rate": coupon / 100.0,  # Convert to decimal
+        "ticker": ticker,
+        "notional": notional,
+        "payments_per_year": payments_per_year,
+        "dates": dates
+    }
 
 
 def main():
     """Main application."""
-
     display_header()
 
     # Sidebar options
@@ -580,7 +504,7 @@ def main():
     uploaded_file = st.file_uploader(
         "Choose a filing file",
         type=["html", "htm", "txt", "pdf"],
-        help="Upload an EDGAR filing (HTML, text, or PDF format)"
+        help="Upload an EDGAR filing"
     )
 
     if uploaded_file is not None:
@@ -590,23 +514,18 @@ def main():
         try:
             if file_extension == ".pdf":
                 if not is_pdf_supported():
-                    st.error("PDF support not available. Install with: pip install pdfplumber")
+                    st.error("PDF support not available. Install: pip install pdfplumber")
                     return
 
-                # Save to temp file for PDF processing
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                     tmp_file.write(uploaded_file.read())
                     tmp_path = tmp_file.name
 
                 content, is_html = read_filing_content(tmp_path, max_pdf_pages=options["max_pdf_pages"])
-
-                # Clean up temp file
                 Path(tmp_path).unlink()
             else:
-                # Read as text - try multiple encodings
+                # Try multiple encodings
                 raw_bytes = uploaded_file.read()
-
-                # Try common encodings in order
                 encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
                 content = None
 
@@ -619,79 +538,55 @@ def main():
                         continue
 
                 if content is None:
-                    # Last resort: decode with errors='replace'
                     content = raw_bytes.decode('utf-8', errors='replace')
-                    st.warning("⚠️ File contains non-UTF-8 characters. Some characters may be replaced.")
+                    st.warning("⚠️ Some characters may be replaced")
 
                 is_html = file_extension in [".html", ".htm"] or content.strip().startswith("<")
 
             st.success(f"✅ Loaded {uploaded_file.name} ({len(content):,} characters)")
 
-            # Process button
+            # Analyze with advanced parsing
             if st.button("🚀 Analyze Filing", type="primary", use_container_width=True):
-
-                # Process filing
-                result = process_filing(content, is_html, options)
+                result = analyze_filing_advanced(content, is_html, options)
 
                 # Store in session state
-                st.session_state["result"] = result
-                st.session_state["filename"] = uploaded_file.name
+                st.session_state["parsed_result"] = result
+                st.session_state["content"] = content
+                st.session_state["is_html"] = is_html
 
         except Exception as e:
             st.error(f"Error loading file: {e}")
             return
 
     # Display results if available
-    if "result" in st.session_state:
-        result = st.session_state["result"]
-        filename = st.session_state.get("filename", "filing")
+    if "parsed_result" in st.session_state:
+        st.markdown("---")
+
+        # Display and allow editing
+        confirmed_params = display_parsing_results(st.session_state["parsed_result"])
+
+        # Store confirmed params
+        st.session_state["confirmed_params"] = confirmed_params
 
         st.markdown("---")
 
-        # Display sections
-        display_symbols_and_dates(result)
-
-        st.markdown("---")
-
-        display_product_terms(result)
-
-        st.markdown("---")
-
-        display_identifiers(result)
-
-        st.markdown("---")
-
-        display_prices(result)
-
-        st.markdown("---")
-
-        display_analytics(result)
-
-        st.markdown("---")
-
-        display_validation(result)
-
-        # Download results
-        st.markdown("---")
-        st.header("💾 Download Results")
-
+        # Analysis buttons
         col1, col2 = st.columns(2)
 
         with col1:
-            # JSON download
-            json_str = json.dumps(result, indent=2)
-            st.download_button(
-                label="📥 Download JSON",
-                data=json_str,
-                file_name=f"{Path(filename).stem}_analysis.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            if st.button("💾 Download Parsed Data", use_container_width=True):
+                json_str = json.dumps(confirmed_params, indent=2)
+                st.download_button(
+                    label="📥 Download JSON",
+                    data=json_str,
+                    file_name="parsed_data.json",
+                    mime="application/json"
+                )
 
         with col2:
-            # Pretty print option
-            if st.button("📋 Copy JSON to Clipboard", use_container_width=True):
-                st.code(json_str, language="json")
+            if st.button("📊 Run Full Analysis", use_container_width=True, type="primary"):
+                st.info("Full analysis with price fetching coming soon...")
+                # TODO: Implement full analysis with yfinance
 
 
 if __name__ == "__main__":
