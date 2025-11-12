@@ -599,19 +599,48 @@ def display_parsing_results(result: Dict[str, Any]):
             help="Extracted initial price"
         )
 
-        threshold_pct = st.number_input(
-            "Threshold Level (%)",
-            value=float(result.get("threshold_pct") or 0),
-            format="%.2f",
-            help="Threshold as % of initial"
-        )
+        # Threshold inputs with automatic calculation
+        st.write("**Threshold Level**")
 
         threshold_dollar = st.number_input(
-            "Threshold Level ($)",
+            "Threshold ($)",
             value=float(result.get("threshold_dollar") or 0),
             format="%.4f",
-            help="Threshold in dollars"
+            help="Threshold in dollars",
+            key="threshold_dollar_input"
         )
+
+        threshold_pct = st.number_input(
+            "Threshold (%)",
+            value=float(result.get("threshold_pct") or 0),
+            format="%.2f",
+            help="Threshold as % of initial",
+            key="threshold_pct_input"
+        )
+
+        # Auto-calculate and show the relationship
+        if initial > 0:
+            if threshold_dollar > 0:
+                calculated_pct = (threshold_dollar / initial) * 100
+                if abs(calculated_pct - threshold_pct) > 0.1:  # If they don't match
+                    st.warning(f"⚠️ Mismatch detected! ${threshold_dollar:.2f} = {calculated_pct:.2f}% of ${initial:.2f}")
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if st.button("✓ Use calculated %", key="use_calc_pct"):
+                            threshold_pct = calculated_pct
+                            st.rerun()
+                    with col_b:
+                        if st.button("✓ Use entered %", key="use_entered_pct"):
+                            threshold_dollar = initial * (threshold_pct / 100.0)
+                            st.rerun()
+                else:
+                    st.success(f"✓ ${threshold_dollar:.2f} = {calculated_pct:.2f}% of ${initial:.2f}")
+            elif threshold_pct > 0:
+                calculated_dollar = initial * (threshold_pct / 100.0)
+                st.info(f"💡 {threshold_pct:.2f}% of ${initial:.2f} = ${calculated_dollar:.2f}")
+                threshold_dollar = calculated_dollar
+
+        st.divider()
 
         autocall = st.number_input(
             "Autocall Level ($)",
@@ -619,6 +648,11 @@ def display_parsing_results(result: Dict[str, Any]):
             format="%.4f",
             help="Autocall trigger level"
         )
+
+        # Show autocall as % of initial
+        if initial > 0 and autocall > 0:
+            autocall_pct = (autocall / initial) * 100
+            st.caption(f"Autocall: {autocall_pct:.2f}% of initial")
 
     with col2:
         st.subheader("Product Details")
