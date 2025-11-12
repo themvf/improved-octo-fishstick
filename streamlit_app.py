@@ -494,38 +494,43 @@ def display_header():
 
 def display_sidebar():
     """Display sidebar with options."""
-    st.sidebar.header("⚙️ Analysis Options")
+    st.sidebar.header("📊 About")
 
-    st.sidebar.subheader("Parsing")
-    use_advanced_parsing = st.sidebar.checkbox(
-        "Use Advanced Parsing",
-        value=True,
-        help="Context-aware parsing with table extraction (recommended)"
-    )
+    st.sidebar.markdown("""
+    **Structured Products Analyzer**
 
-    st.sidebar.subheader("Analysis Type")
-    analysis_type = st.sidebar.radio(
-        "Select analysis type:",
-        ["General Extraction", "Autocallable Note Analysis"],
-        help="Autocallable analysis includes coupon scheduling and trigger detection"
-    )
+    Upload EDGAR filing (HTML/PDF) to analyze:
+    - Initial price & thresholds
+    - Autocall/early redemption levels
+    - Observation dates
+    - Coupon payments
+    - Price history & triggers
+    """)
 
-    st.sidebar.subheader("PDF Options")
+    st.sidebar.divider()
+
+    st.sidebar.subheader("📁 File Support")
     if is_pdf_supported():
-        st.sidebar.success("✅ PDF support available")
+        st.sidebar.success("✅ PDF & HTML supported")
         max_pdf_pages = st.sidebar.number_input(
             "Max PDF Pages",
             min_value=1,
             max_value=1000,
-            value=50
+            value=50,
+            help="Limit pages to read from PDF files"
         )
     else:
-        st.sidebar.warning("⚠️ Install pdfplumber for PDF support")
+        st.sidebar.info("✅ HTML files supported")
+        st.sidebar.caption("💡 Install pdfplumber for PDF support:\n`pip install pdfplumber`")
         max_pdf_pages = None
 
+    st.sidebar.divider()
+
+    st.sidebar.caption("Advanced parsing with context-aware logic, table extraction, and multi-issuer support.")
+
     return {
-        "use_advanced_parsing": use_advanced_parsing,
-        "analysis_type": analysis_type,
+        "use_advanced_parsing": True,  # Always use advanced parsing
+        "analysis_type": "Autocallable Note Analysis",  # Always autocallable
         "max_pdf_pages": max_pdf_pages
     }
 
