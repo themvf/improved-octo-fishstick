@@ -603,8 +603,26 @@ def main():
                 # Clean up temp file
                 Path(tmp_path).unlink()
             else:
-                # Read as text
-                content = uploaded_file.read().decode("utf-8")
+                # Read as text - try multiple encodings
+                raw_bytes = uploaded_file.read()
+
+                # Try common encodings in order
+                encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+                content = None
+
+                for encoding in encodings_to_try:
+                    try:
+                        content = raw_bytes.decode(encoding)
+                        st.info(f"✅ File decoded using {encoding} encoding")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+
+                if content is None:
+                    # Last resort: decode with errors='replace'
+                    content = raw_bytes.decode('utf-8', errors='replace')
+                    st.warning("⚠️ File contains non-UTF-8 characters. Some characters may be replaced.")
+
                 is_html = file_extension in [".html", ".htm"] or content.strip().startswith("<")
 
             st.success(f"✅ Loaded {uploaded_file.name} ({len(content):,} characters)")
