@@ -194,14 +194,19 @@ def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]
     return level
 
 
-def extract_observation_dates_from_tables(html: str) -> List[dt.date]:
-    """Extract observation dates from HTML tables - much more accurate than regex."""
+def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], List[str]]:
+    """
+    Extract observation dates from HTML tables - much more accurate than regex.
+
+    Returns: (dates, debug_info) where debug_info contains details about extraction
+    """
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "lxml")
         dates: List[dt.date] = []
+        debug_info: List[str] = []
 
-        for tbl in soup.find_all("table"):
+        for tbl_idx, tbl in enumerate(soup.find_all("table")):
             rows = []
             for tr in tbl.find_all("tr"):
                 cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
@@ -212,27 +217,50 @@ def extract_observation_dates_from_tables(html: str) -> List[dt.date]:
                 continue
 
             header = rows[0]
-            idx = None
+            date_col_idx = None
+            matched_header = None
 
-            # Look for date columns
+            # Look for date columns with expanded patterns
             for j, h in enumerate(header):
-                if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date)", h, flags=re.I):
-                    idx = j
+                # More comprehensive date column patterns
+                if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
+                           r"determination\s+date|pricing\s+date|observation\s+period|"
+                           r"autocall\s+date|call\s+date)", h, flags=re.I):
+                    date_col_idx = j
+                    matched_header = h
                     break
 
-            if idx is None:
+            if date_col_idx is None:
+                # Try to find any column with "date" in the header
+                for j, h in enumerate(header):
+                    if "date" in h.lower() and "trade" not in h.lower() and "maturity" not in h.lower():
+                        date_col_idx = j
+                        matched_header = h
+                        break
+
+            if date_col_idx is None:
+                debug_info.append(f"Table {tbl_idx + 1}: No date column found. Headers: {header[:5]}")
                 continue
 
+            debug_info.append(f"Table {tbl_idx + 1}: Found date column '{matched_header}' at index {date_col_idx}")
+
             # Extract dates from that column
+            found_in_table = 0
             for r in rows[1:]:
-                if idx < len(r):
-                    d = parse_date(r[idx])
+                if date_col_idx < len(r):
+                    cell_text = r[date_col_idx]
+                    d = parse_date(cell_text)
                     if d:
                         dates.append(d)
+                        found_in_table += 1
 
-        return sorted(set(dates))
-    except Exception:
-        return []
+            debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} dates")
+
+        unique_dates = sorted(set(dates))
+        debug_info.append(f"Total unique dates found: {len(unique_dates)}")
+        return unique_dates, debug_info
+    except Exception as e:
+        return [], [f"Error during extraction: {str(e)}"]
 
 
 def parse_coupon_rate(text: str) -> Optional[float]:
@@ -246,14 +274,19 @@ def parse_coupon_rate(text: str) -> Optional[float]:
 def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]:
     """Comprehensive date parsing with table extraction."""
     dates = {}
+    debug_info = []
 
     # Try table extraction first (most accurate)
     if is_html:
-        obs_dates = extract_observation_dates_from_tables(raw_content)
+        obs_dates, extraction_debug = extract_observation_dates_from_tables(raw_content)
+        debug_info.extend(extraction_debug)
         if obs_dates:
             dates["observation_dates"] = [d.isoformat() for d in obs_dates]
             dates["pricing_date"] = obs_dates[0].isoformat()
             dates["maturity_date"] = obs_dates[-1].isoformat()
+
+    # Store debug info
+    dates["extraction_debug"] = debug_info
 
     # Fallback to text parsing
     text = html_to_text(raw_content) if is_html else raw_content
@@ -494,23 +527,52 @@ def display_parsing_results(result: Dict[str, Any]):
         else:
             st.session_state["edited_observation_dates"] = []
 
+    # Display extraction debug info
+    if dates.get("extraction_debug"):
+        with st.expander("🔍 View Date Extraction Debug Info"):
+            for info in dates["extraction_debug"]:
+                st.text(info)
+
     # Display info about detected dates
     if "observation_dates" in dates:
         st.info(f"ℹ️ Detected {len(dates['observation_dates'])} observation dates from filing. You can edit, add, or remove dates below.")
 
-    # Display each date as an editable line item
+    # Display each date as an editable line item with text input
     edited_dates = []
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
-        col1, col2 = st.columns([4, 1])
+        col1, col2, col3 = st.columns([3, 1, 0.5])
         with col1:
-            new_date = st.date_input(
+            # Text input for easy date entry (format: YYYY-MM-DD or MM/DD/YYYY)
+            date_str = st.text_input(
                 f"Observation Date #{idx + 1}",
-                value=obs_date,
-                key=f"obs_date_{idx}"
+                value=obs_date.isoformat(),
+                key=f"obs_date_text_{idx}",
+                help="Format: YYYY-MM-DD or MM/DD/YYYY or any common date format"
             )
-            edited_dates.append(new_date)
+            try:
+                # Try to parse the entered date
+                new_date = parse_date(date_str)
+                if new_date:
+                    edited_dates.append(new_date)
+                else:
+                    st.error(f"Could not parse date: {date_str}")
+                    edited_dates.append(obs_date)  # Keep old value
+            except Exception:
+                st.error(f"Invalid date format: {date_str}")
+                edited_dates.append(obs_date)  # Keep old value
         with col2:
-            if st.button("🗑️ Remove", key=f"remove_{idx}"):
+            # Calendar picker as alternative
+            cal_date = st.date_input(
+                "📅",
+                value=obs_date,
+                key=f"obs_date_cal_{idx}",
+                label_visibility="collapsed"
+            )
+            # If calendar was used (different from current), update
+            if cal_date != obs_date:
+                edited_dates[-1] = cal_date
+        with col3:
+            if st.button("🗑️", key=f"remove_{idx}", help="Remove this date"):
                 st.session_state["edited_observation_dates"].pop(idx)
                 st.rerun()
 
