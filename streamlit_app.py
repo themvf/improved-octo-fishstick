@@ -279,6 +279,38 @@ def parse_coupon_rate(text: str) -> Optional[float]:
     return None
 
 
+def extract_review_dates_from_text(text: str) -> List[dt.date]:
+    """
+    Extract review/observation dates from text when table extraction fails.
+    Looks for patterns like "Review Dates: Jan 1, 2024, Feb 1, 2024, ..."
+    """
+    dates = []
+
+    # Look for "Review Dates:" or "Observation Dates:" followed by comma-separated dates
+    patterns = [
+        r"Review\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
+        r"Observation\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
+        r"Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)",
+        r"Coupon\s+Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:Interest\s+Payment|Maturity\s+Date|\*\s*Subject|$)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I | re.DOTALL)
+        if match:
+            dates_text = match.group(1)
+            # Find all dates in this text
+            date_matches = DATE_REGEX.findall(dates_text)
+            for date_str in date_matches:
+                d = parse_date(date_str)
+                if d:
+                    dates.append(d)
+
+            if dates:
+                break  # Found dates, no need to try other patterns
+
+    return sorted(set(dates))
+
+
 def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]:
     """Comprehensive date parsing with table extraction."""
     dates = {}
@@ -293,11 +325,25 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]
             dates["pricing_date"] = obs_dates[0].isoformat()
             dates["maturity_date"] = obs_dates[-1].isoformat()
 
+    # Fallback to text parsing for observation dates if table extraction failed
+    text = html_to_text(raw_content) if is_html else raw_content
+
+    if "observation_dates" not in dates or not dates["observation_dates"]:
+        debug_info.append("Table extraction found no dates, trying text parsing...")
+        text_dates = extract_review_dates_from_text(text)
+        if text_dates:
+            dates["observation_dates"] = [d.isoformat() for d in text_dates]
+            if not dates.get("pricing_date"):
+                dates["pricing_date"] = text_dates[0].isoformat()
+            if not dates.get("maturity_date"):
+                dates["maturity_date"] = text_dates[-1].isoformat()
+            debug_info.append(f"Text parsing found {len(text_dates)} observation/review dates")
+
     # Store debug info
     dates["extraction_debug"] = debug_info
 
-    # Fallback to text parsing
-    text = html_to_text(raw_content) if is_html else raw_content
+    # Continue with other date parsing
+    # (Fallback to text parsing for other dates remains below)
 
     # Pricing date
     if "pricing_date" not in dates:
