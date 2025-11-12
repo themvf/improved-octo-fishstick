@@ -467,15 +467,63 @@ def display_parsing_results(result: Dict[str, Any]):
     st.subheader("Key Dates")
     dates = result.get("dates", {})
 
-    if "observation_dates" in dates:
-        st.write(f"**Observation Dates:** {len(dates['observation_dates'])} dates detected")
-        with st.expander("View all observation dates"):
-            st.json(dates["observation_dates"])
-
     col1, col2, col3 = st.columns(3)
     col1.metric("Pricing Date", dates.get("pricing_date", "N/A"))
     col2.metric("Settlement Date", dates.get("settlement_date", "N/A"))
     col3.metric("Maturity Date", dates.get("maturity_date", "N/A"))
+
+    # Editable Observation Dates
+    st.subheader("📅 Observation Dates (Editable)")
+
+    # Initialize session state for observation dates if not present
+    if "edited_observation_dates" not in st.session_state:
+        if "observation_dates" in dates:
+            st.session_state["edited_observation_dates"] = [
+                dt.datetime.fromisoformat(d).date() for d in dates["observation_dates"]
+            ]
+        else:
+            st.session_state["edited_observation_dates"] = []
+
+    # Display info about detected dates
+    if "observation_dates" in dates:
+        st.info(f"ℹ️ Detected {len(dates['observation_dates'])} observation dates from filing. You can edit, add, or remove dates below.")
+
+    # Display each date as an editable line item
+    edited_dates = []
+    for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            new_date = st.date_input(
+                f"Observation Date #{idx + 1}",
+                value=obs_date,
+                key=f"obs_date_{idx}"
+            )
+            edited_dates.append(new_date)
+        with col2:
+            if st.button("🗑️ Remove", key=f"remove_{idx}"):
+                st.session_state["edited_observation_dates"].pop(idx)
+                st.rerun()
+
+    # Update session state with edited dates
+    st.session_state["edited_observation_dates"] = edited_dates
+
+    # Add new date button
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("➕ Add Date"):
+            # Add today's date as default
+            st.session_state["edited_observation_dates"].append(dt.date.today())
+            st.rerun()
+    with col2:
+        if st.button("🔄 Reset to Detected Dates"):
+            if "observation_dates" in dates:
+                st.session_state["edited_observation_dates"] = [
+                    dt.datetime.fromisoformat(d).date() for d in dates["observation_dates"]
+                ]
+                st.rerun()
+
+    # Store edited dates in proper format
+    dates["observation_dates"] = [d.isoformat() for d in st.session_state["edited_observation_dates"]]
 
     # Return updated values
     return {
@@ -658,6 +706,7 @@ def run_full_analysis(params: Dict[str, Any]):
                     if params.get("threshold_dollar"):
                         row["Above Threshold"] = close_price >= params["threshold_dollar"]
                     if params.get("autocall_level"):
+                        # EXPLICIT: Autocall triggers when price >= autocall level (greater than or equal to)
                         row["Autocall Triggered"] = close_price >= params["autocall_level"]
                     if params.get("initial"):
                         row["% of Initial"] = f"{(close_price / params['initial']) * 100:.2f}%"
@@ -726,6 +775,14 @@ def run_full_analysis(params: Dict[str, Any]):
 
             # Autocall analysis
             st.subheader("🔔 Autocall Analysis")
+
+            # Explicit explanation of autocall trigger logic
+            st.info(
+                "ℹ️ **Autocall Trigger Logic:** The product is automatically called when the "
+                f"closing price is **greater than or equal to (≥)** the autocall level "
+                f"(${params.get('autocall_level', 0):.2f}). The first observation date is typically "
+                "not eligible for autocall."
+            )
 
             autocalled = False
             call_date = None
