@@ -115,7 +115,17 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
     if m_init_value:
         initial = float(m_init_value.group(1).replace(",", ""))
 
-    # Strategy 2: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
+    # Strategy 2: Look for "Initial price:" (simple format, very common)
+    if initial is None:
+        m_init_price = re.search(
+            r"Initial\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            text,
+            flags=re.I
+        )
+        if m_init_price:
+            initial = float(m_init_price.group(1).replace(",", ""))
+
+    # Strategy 3: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
     if initial is None:
         m_init_labeled = re.search(
             r"Initial\s+(?:Share|Stock)\s+Price[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
@@ -125,7 +135,7 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
         if m_init_labeled:
             initial = float(m_init_labeled.group(1).replace(",", ""))
 
-    # Strategy 3: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
+    # Strategy 4: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
     if initial is None:
         # Find the heading and look in the 200 chars after it
         for m in re.finditer(r"\b(Initial\s+(?:Share|Stock)\s+Price)\b", text, flags=re.I):
@@ -137,7 +147,7 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
                 initial = float(m_val.group(1).replace(",", ""))
                 break
 
-    # Strategy 4: Fallback to original pattern
+    # Strategy 5: Fallback to original pattern
     if initial is None:
         m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
         if m_init:
@@ -208,7 +218,7 @@ def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]
         end = min(len(text), m.end() + 250)
         candidates.append(text[start:end])
 
-    for m in re.finditer(r"(call\s+level|redemption\s+trigger|redemption\s+level)", text, flags=re.I):
+    for m in re.finditer(r"(call\s+threshold\s+level|call\s+level|redemption\s+trigger|redemption\s+level)", text, flags=re.I):
         start = max(0, m.start() - 250)
         end = min(len(text), m.end() + 250)
         candidates.append(text[start:end])
