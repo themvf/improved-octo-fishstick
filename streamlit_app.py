@@ -106,16 +106,26 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
     # Initial Share Price - dedicated search
     initial = None
 
-    # Strategy 1: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
-    m_init_labeled = re.search(
-        r"Initial\s+(?:Share|Stock)\s+Price[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
+    # Strategy 1: Look for "Initial Value:" (common in many filings)
+    m_init_value = re.search(
+        r"Initial\s+Value[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
         text,
         flags=re.I
     )
-    if m_init_labeled:
-        initial = float(m_init_labeled.group(1).replace(",", ""))
+    if m_init_value:
+        initial = float(m_init_value.group(1).replace(",", ""))
 
-    # Strategy 2: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
+    # Strategy 2: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
+    if initial is None:
+        m_init_labeled = re.search(
+            r"Initial\s+(?:Share|Stock)\s+Price[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
+            text,
+            flags=re.I
+        )
+        if m_init_labeled:
+            initial = float(m_init_labeled.group(1).replace(",", ""))
+
+    # Strategy 3: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
     if initial is None:
         # Find the heading and look in the 200 chars after it
         for m in re.finditer(r"\b(Initial\s+(?:Share|Stock)\s+Price)\b", text, flags=re.I):
@@ -127,7 +137,7 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
                 initial = float(m_val.group(1).replace(",", ""))
                 break
 
-    # Strategy 3: Fallback to original pattern
+    # Strategy 4: Fallback to original pattern
     if initial is None:
         m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
         if m_init:
@@ -136,8 +146,8 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
     threshold_dollar: Optional[float] = None
     threshold_pct: Optional[float] = None
 
-    # 1) Prefer text right AFTER the heading (tight window)
-    for m in re.finditer(r"(downside\s+threshold\s+level|threshold\s+level|barrier\s+level)", text, flags=re.I):
+    # 1) Prefer text right AFTER the heading (tight window) - expanded patterns
+    for m in re.finditer(r"(interest\s+barrier|trigger\s+value|downside\s+threshold\s+level|threshold\s+level|barrier\s+level)", text, flags=re.I):
         start = m.end()  # look only AFTER the phrase
         end = min(len(text), m.end() + 250)  # tight window
         snippet = text[start:end]
@@ -148,7 +158,7 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
             m_d = MONEY_RE.search(snippet)
 
         # Percentage
-        m_p = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:of\s+the\s+initial\s+share\s+price)?",
+        m_p = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:of\s+the\s+initial\s+(?:value|share\s+price))?",
                        snippet, flags=re.I)
 
         if m_d:
@@ -301,10 +311,46 @@ def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], Lis
 
 
 def parse_coupon_rate(text: str) -> Optional[float]:
-    """Parse coupon rate (per annum)."""
+    """Parse coupon rate (per annum) and coupon payment amount."""
+    # Try to find annual coupon rate
     m_apr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum|p\.a\.|annual)", text, flags=re.I)
     if m_apr:
         return float(m_apr.group(1))
+
+    # Try "Contingent Interest Rate" (common in autocall notes)
+    m_contingent = re.search(
+        r"Contingent\s+Interest\s+Rate[^:]*[:]\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum)?",
+        text,
+        flags=re.I
+    )
+    if m_contingent:
+        return float(m_contingent.group(1))
+
+    return None
+
+
+def parse_coupon_payment(text: str) -> Optional[float]:
+    """Parse coupon payment in dollars per period."""
+    # Look for patterns like "Contingent Interest Payment ... $37.50"
+    m_payment = re.search(
+        r"Contingent\s+Interest\s+Payment[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_payment:
+        return float(m_payment.group(1).replace(",", ""))
+
+    # Look for quarterly/period payment amount
+    m_period = re.search(
+        r"(?:payable\s+at\s+a\s+rate\s+of|payment\s+of)\s+([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s+quarter|quarterly)",
+        text,
+        flags=re.I
+    )
+    if m_period:
+        # This is a percentage per quarter, need to convert to dollars
+        # Will return None here and let the UI handle it
+        return None
+
     return None
 
 
@@ -490,8 +536,9 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         # Parse dates
         dates = parse_dates_comprehensive(content, is_html)
 
-        # Parse coupon rate
+        # Parse coupon rate and payment
         coupon_rate = parse_coupon_rate(text)
+        coupon_payment = parse_coupon_payment(text)
 
         # Detect ticker
         ticker = detect_underlying_ticker(text)
@@ -502,6 +549,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         result["threshold_pct"] = threshold_pct
         result["autocall_level"] = autocall_level
         result["coupon_rate_annual"] = coupon_rate
+        result["coupon_payment_per_period"] = coupon_payment
         result["dates"] = dates
         result["ticker"] = ticker
 
@@ -583,7 +631,7 @@ def display_parsing_results(result: Dict[str, Any]):
         # Coupon payment in dollars per period
         coupon_payment_per_period = st.number_input(
             "Coupon Payment per Period ($)",
-            value=0.0,
+            value=float(result.get("coupon_payment_per_period") or 0.0),
             format="%.4f",
             help="Dollar amount paid per coupon period (e.g., $0.2625 per quarter)"
         )
