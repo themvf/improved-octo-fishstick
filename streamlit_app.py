@@ -235,6 +235,11 @@ def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]
             level = initial * (float(m_pct.group(1)) / 100.0)
             break
 
+    # Goldman Sachs pattern: "greater than or equal to the initial share price" (no explicit $ or %)
+    if level is None and initial is not None:
+        if re.search(r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price", text, flags=re.I):
+            level = float(initial)
+
     # Default: 100% of initial if mentioned
     if level is None and initial is not None:
         if re.search(r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s*share\s*price)", text, flags=re.I):
@@ -341,6 +346,15 @@ def parse_coupon_rate(text: str) -> Optional[float]:
 
 def parse_coupon_payment(text: str) -> Optional[float]:
     """Parse coupon payment in dollars per period."""
+    # Goldman Sachs pattern: "Contingent quarterly coupon: $0.5375"
+    m_gs_coupon = re.search(
+        r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_gs_coupon:
+        return float(m_gs_coupon.group(1).replace(",", ""))
+
     # Look for patterns like "Contingent Interest Payment ... $37.50"
     # Allow up to 200 chars between "Contingent Interest Payment" and the dollar amount
     m_payment = re.search(
