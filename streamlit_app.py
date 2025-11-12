@@ -222,10 +222,15 @@ def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], Lis
 
             # Look for date columns with expanded patterns
             for j, h in enumerate(header):
-                # More comprehensive date column patterns
+                # Skip contingent payment dates - we only want observation/determination dates
+                if re.search(r"contingent\s+payment", h, flags=re.I):
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping contingent payment date column: '{h}'")
+                    continue
+
+                # Match observation/determination date columns
                 if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
                            r"determination\s+date|pricing\s+date|observation\s+period|"
-                           r"autocall\s+date|call\s+date)", h, flags=re.I):
+                           r"autocall\s+observation|autocall\s+valuation)", h, flags=re.I):
                     date_col_idx = j
                     matched_header = h
                     break
@@ -233,7 +238,10 @@ def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], Lis
             if date_col_idx is None:
                 # Try to find any column with "date" in the header
                 for j, h in enumerate(header):
-                    if "date" in h.lower() and "trade" not in h.lower() and "maturity" not in h.lower():
+                    # Explicitly exclude contingent payment dates, trade dates, and maturity dates
+                    if "date" in h.lower():
+                        if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement"]):
+                            continue
                         date_col_idx = j
                         matched_header = h
                         break
