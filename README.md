@@ -41,7 +41,27 @@ Check PDF support:
 python -m structured_products --check-pdf-support
 ```
 
-## Quick start
+## Quick Start
+
+### Web Interface (Recommended for Beginners)
+
+Launch the interactive Streamlit web application:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Features:
+- 📁 **Drag-and-drop file upload** for HTML/PDF/text filings
+- 📊 **Interactive visualizations** (candlestick charts, volatility graphs)
+- ⚙️ **Configurable analysis options** (terms, identifiers, analytics)
+- 💾 **Download results** as JSON
+- 🔢 **Visual Greeks display** with barrier/cap analysis
+- 📈 **Risk metrics dashboard** with color-coded indicators
+
+See [STREAMLIT_APP.md](STREAMLIT_APP.md) for detailed documentation.
+
+### Command Line Interface
 
 Process an HTML filing:
 ```bash
