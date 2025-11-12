@@ -434,13 +434,6 @@ def display_parsing_results(result: Dict[str, Any]):
     with col2:
         st.subheader("Product Details")
 
-        coupon = st.number_input(
-            "Coupon Rate (% per annum)",
-            value=float(result.get("coupon_rate_annual") or 0),
-            format="%.2f",
-            help="Annual coupon rate"
-        )
-
         ticker = st.text_input(
             "Underlying Ticker",
             value=result.get("ticker") or "TICKER",
@@ -462,6 +455,23 @@ def display_parsing_results(result: Dict[str, Any]):
 
         freq_map = {"Monthly (12x)": 12, "Quarterly (4x)": 4, "Semi-Annual (2x)": 2, "Annual (1x)": 1}
         payments_per_year = freq_map[frequency]
+
+        # Coupon payment in dollars per period
+        coupon_payment_per_period = st.number_input(
+            "Coupon Payment per Period ($)",
+            value=0.0,
+            format="%.4f",
+            help="Dollar amount paid per coupon period (e.g., $0.2625 per quarter)"
+        )
+
+        # Calculate annual percentage from dollar payment
+        if notional > 0 and coupon_payment_per_period > 0:
+            annual_coupon_dollars = coupon_payment_per_period * payments_per_year
+            coupon_rate_annual_pct = (annual_coupon_dollars / notional) * 100
+            st.info(f"📊 **Calculated Annual Coupon Rate:** {coupon_rate_annual_pct:.4f}%")
+            coupon_rate_decimal = coupon_rate_annual_pct / 100.0
+        else:
+            coupon_rate_decimal = 0.0
 
     # Dates
     st.subheader("Key Dates")
@@ -531,7 +541,8 @@ def display_parsing_results(result: Dict[str, Any]):
         "threshold_dollar": threshold_dollar,
         "threshold_pct": threshold_pct,
         "autocall_level": autocall,
-        "coupon_rate": coupon / 100.0,  # Convert to decimal
+        "coupon_rate": coupon_rate_decimal,  # Already in decimal form
+        "coupon_payment_per_period": coupon_payment_per_period,
         "ticker": ticker,
         "notional": notional,
         "payments_per_year": payments_per_year,
@@ -763,12 +774,51 @@ def run_full_analysis(params: Dict[str, Any]):
                     annotation_text="Initial"
                 )
 
+            # Add observation date markers showing actual stock prices
+            obs_dates_for_chart = []
+            obs_prices_for_chart = []
+            obs_labels = []
+
+            for idx, row in enumerate(obs_data):
+                actual_date = dt.datetime.fromisoformat(row["Actual Date"])
+                close_price = row["Close"]
+                obs_dates_for_chart.append(actual_date)
+                obs_prices_for_chart.append(close_price)
+
+                # Create label with price and autocall status
+                label = f"Obs #{idx+1}<br>Date: {row['Observation Date']}<br>Price: ${close_price:.2f}"
+                if row.get("Autocall Triggered"):
+                    label += "<br>✅ AUTOCALLED"
+                elif row.get("Above Threshold") is not None:
+                    label += "<br>✓ Above Threshold" if row["Above Threshold"] else "<br>✗ Below Threshold"
+                obs_labels.append(label)
+
+            fig.add_trace(go.Scatter(
+                x=obs_dates_for_chart,
+                y=obs_prices_for_chart,
+                mode='markers+text',
+                marker=dict(
+                    size=12,
+                    color=['green' if obs_data[i].get("Autocall Triggered") else 'orange'
+                           for i in range(len(obs_data))],
+                    symbol='diamond',
+                    line=dict(width=2, color='white')
+                ),
+                text=[f"#{i+1}" for i in range(len(obs_data))],
+                textposition="top center",
+                textfont=dict(size=10, color='black'),
+                name='Observation Dates',
+                hovertext=obs_labels,
+                hoverinfo='text'
+            ))
+
             fig.update_layout(
-                title=f"{ticker} Price Chart",
+                title=f"{ticker} Price Chart with Observation Dates",
                 yaxis_title="Price ($)",
                 xaxis_title="Date",
                 height=500,
-                xaxis_rangeslider_visible=False
+                xaxis_rangeslider_visible=False,
+                showlegend=True
             )
 
             st.plotly_chart(fig, use_container_width=True)
