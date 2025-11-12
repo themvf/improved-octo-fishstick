@@ -97,16 +97,41 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
     Returns: (initial, threshold_dollar, threshold_pct_of_initial)
 
     Key improvements:
+    - Dedicated search for "Initial Share Price" section
     - Looks NEAR specific headings (tight 250-char window)
     - Prefers precise dollar amounts immediately after heading
     - Cross-validates $ vs % values
     - Sanity checks to reject stray numbers
     """
-    # Initial Share Price
+    # Initial Share Price - dedicated search
     initial = None
-    m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
-    if m_init:
-        initial = float(m_init.group(1).replace(",", ""))
+
+    # Strategy 1: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
+    m_init_labeled = re.search(
+        r"Initial\s+(?:Share|Stock)\s+Price[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_init_labeled:
+        initial = float(m_init_labeled.group(1).replace(",", ""))
+
+    # Strategy 2: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
+    if initial is None:
+        # Find the heading and look in the 200 chars after it
+        for m in re.finditer(r"\b(Initial\s+(?:Share|Stock)\s+Price)\b", text, flags=re.I):
+            start = m.end()
+            end = min(len(text), m.end() + 200)
+            snippet = text[start:end]
+            m_val = re.search(r"\$\s*([0-9,]+(?:\.[0-9]+)?)", snippet)
+            if m_val:
+                initial = float(m_val.group(1).replace(",", ""))
+                break
+
+    # Strategy 3: Fallback to original pattern
+    if initial is None:
+        m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
+        if m_init:
+            initial = float(m_init.group(1).replace(",", ""))
 
     threshold_dollar: Optional[float] = None
     threshold_pct: Optional[float] = None
@@ -160,16 +185,20 @@ def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[fl
 
 
 def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]:
-    """Parse autocall level with context-aware search."""
+    """
+    Parse autocall/early redemption level with context-aware search.
+
+    Note: "early redemption" is treated as synonymous with "autocall"
+    """
     candidates = []
 
-    # Look near autocall keywords
-    for m in re.finditer(r"(automatic(?:ally)?\s+call(?:ed)?|autocall)", text, flags=re.I):
+    # Look near autocall keywords (including "early redemption" as synonym)
+    for m in re.finditer(r"(automatic(?:ally)?\s+call(?:ed)?|autocall|early\s+redemption)", text, flags=re.I):
         start = max(0, m.start() - 250)
         end = min(len(text), m.end() + 250)
         candidates.append(text[start:end])
 
-    for m in re.finditer(r"(call\s+level|redemption\s+trigger)", text, flags=re.I):
+    for m in re.finditer(r"(call\s+level|redemption\s+trigger|redemption\s+level)", text, flags=re.I):
         start = max(0, m.start() - 250)
         end = min(len(text), m.end() + 250)
         candidates.append(text[start:end])
@@ -485,6 +514,14 @@ def display_parsing_results(result: Dict[str, Any]):
     """Display parsed results with edit capability."""
     st.header("📋 Parsed Information")
 
+    # Display extraction debug info at the top, separated from data inputs
+    dates = result.get("dates", {})
+    if dates.get("extraction_debug"):
+        with st.expander("🔍 Date Extraction Debug Information (Advanced)"):
+            st.caption("This section shows technical details about how dates were extracted from the filing.")
+            for info in dates["extraction_debug"]:
+                st.text(info)
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -580,12 +617,6 @@ def display_parsing_results(result: Dict[str, Any]):
             ]
         else:
             st.session_state["edited_observation_dates"] = []
-
-    # Display extraction debug info
-    if dates.get("extraction_debug"):
-        with st.expander("🔍 View Date Extraction Debug Info"):
-            for info in dates["extraction_debug"]:
-                st.text(info)
 
     # Display info about detected dates
     if "observation_dates" in dates:
