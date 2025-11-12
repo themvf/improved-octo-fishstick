@@ -585,8 +585,261 @@ def main():
 
         with col2:
             if st.button("📊 Run Full Analysis", use_container_width=True, type="primary"):
-                st.info("Full analysis with price fetching coming soon...")
-                # TODO: Implement full analysis with yfinance
+                run_full_analysis(confirmed_params)
+
+
+def run_full_analysis(params: Dict[str, Any]):
+    """Run full analysis with price fetching and visualization."""
+    import yfinance as yf
+
+    ticker = params.get("ticker")
+    dates_dict = params.get("dates", {})
+    observation_dates = dates_dict.get("observation_dates", [])
+
+    if not ticker or ticker == "TICKER":
+        st.error("❌ Please specify a valid ticker symbol")
+        return
+
+    if not observation_dates:
+        st.warning("⚠️ No observation dates found. Using key dates instead...")
+        # Use other dates if available
+        date_keys = ["pricing_date", "trade_date", "settlement_date", "maturity_date"]
+        observation_dates = [dates_dict[k] for k in date_keys if k in dates_dict and dates_dict[k]]
+
+    if not observation_dates:
+        st.error("❌ No dates available for analysis")
+        return
+
+    # Convert to date objects
+    date_objects = [dt.datetime.fromisoformat(d).date() for d in observation_dates]
+    date_objects.sort()
+
+    st.header("💰 Price Analysis")
+
+    with st.spinner(f"Fetching prices for {ticker}..."):
+        try:
+            # Fetch prices for date range
+            start_date = date_objects[0] - dt.timedelta(days=14)
+            end_date = date_objects[-1] + dt.timedelta(days=2)
+
+            df_prices = yf.download(
+                ticker,
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
+                progress=False,
+                auto_adjust=False
+            )
+
+            if df_prices.empty:
+                st.error(f"❌ No price data found for {ticker}")
+                return
+
+            st.success(f"✅ Fetched {len(df_prices)} price records")
+
+            # Build observation table
+            obs_data = []
+            for obs_date in date_objects:
+                # Find close on or before obs_date
+                prices_before = df_prices[df_prices.index.date <= obs_date]
+                if not prices_before.empty:
+                    close_price = float(prices_before['Close'].iloc[-1])
+                    actual_date = prices_before.index[-1].date()
+
+                    row = {
+                        "Observation Date": obs_date.isoformat(),
+                        "Actual Date": actual_date.isoformat(),
+                        "Close": close_price,
+                        "Initial": params.get("initial", 0),
+                        "Threshold": params.get("threshold_dollar", 0),
+                        "Autocall Level": params.get("autocall_level", 0)
+                    }
+
+                    # Checks
+                    if params.get("threshold_dollar"):
+                        row["Above Threshold"] = close_price >= params["threshold_dollar"]
+                    if params.get("autocall_level"):
+                        row["Autocall Triggered"] = close_price >= params["autocall_level"]
+                    if params.get("initial"):
+                        row["% of Initial"] = f"{(close_price / params['initial']) * 100:.2f}%"
+
+                    obs_data.append(row)
+
+            if not obs_data:
+                st.error("❌ Could not match prices to observation dates")
+                return
+
+            df_obs = pd.DataFrame(obs_data)
+
+            # Display table
+            st.subheader("📊 Observation Schedule")
+            st.dataframe(df_obs, use_container_width=True)
+
+            # Price chart
+            st.subheader("📈 Price History")
+            fig = go.Figure()
+
+            fig.add_trace(go.Candlestick(
+                x=df_prices.index,
+                open=df_prices['Open'],
+                high=df_prices['High'],
+                low=df_prices['Low'],
+                close=df_prices['Close'],
+                name=ticker
+            ))
+
+            # Add threshold line
+            if params.get("threshold_dollar"):
+                fig.add_hline(
+                    y=params["threshold_dollar"],
+                    line_dash="dash",
+                    line_color="red",
+                    annotation_text="Threshold"
+                )
+
+            # Add autocall line
+            if params.get("autocall_level"):
+                fig.add_hline(
+                    y=params["autocall_level"],
+                    line_dash="dash",
+                    line_color="green",
+                    annotation_text="Autocall Level"
+                )
+
+            # Add initial price line
+            if params.get("initial"):
+                fig.add_hline(
+                    y=params["initial"],
+                    line_dash="dot",
+                    line_color="blue",
+                    annotation_text="Initial"
+                )
+
+            fig.update_layout(
+                title=f"{ticker} Price Chart",
+                yaxis_title="Price ($)",
+                xaxis_title="Date",
+                height=500,
+                xaxis_rangeslider_visible=False
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Autocall analysis
+            st.subheader("🔔 Autocall Analysis")
+
+            autocalled = False
+            call_date = None
+
+            for idx, row in df_obs.iterrows():
+                if idx > 0 and row.get("Autocall Triggered"):  # First observation usually not eligible
+                    autocalled = True
+                    call_date = row["Observation Date"]
+                    break
+
+            if autocalled:
+                st.success(f"✅ **AUTOCALLED** on {call_date}")
+                st.write(f"Product would be called early. Investor receives principal plus accrued coupons.")
+            else:
+                st.info("ℹ️ **Not Autocalled** - Product runs to maturity")
+
+                final_price = obs_data[-1]["Close"]
+                threshold = params.get("threshold_dollar", 0)
+                initial = params.get("initial", 1)
+
+                if final_price >= threshold:
+                    st.success(f"✅ Final price (${final_price:.2f}) ≥ Threshold (${threshold:.2f})")
+                    st.write("Investor receives 100% of principal plus all coupons")
+                else:
+                    loss_pct = ((final_price - initial) / initial) * 100
+                    st.error(f"❌ Final price (${final_price:.2f}) < Threshold (${threshold:.2f})")
+                    st.write(f"Investor participates in downside: **{loss_pct:.2f}%** loss on principal")
+
+            # Coupon summary
+            st.subheader("💵 Coupon Summary")
+
+            coupon_rate = params.get("coupon_rate", 0)
+            notional = params.get("notional", 1000)
+            payments_per_year = params.get("payments_per_year", 4)
+            threshold = params.get("threshold_dollar", 0)
+
+            if coupon_rate > 0:
+                coupon_per_period = notional * (coupon_rate / payments_per_year)
+
+                eligible_periods = 0
+                for idx, row in df_obs.iterrows():
+                    if autocalled and idx > df_obs[df_obs["Observation Date"] == call_date].index[0]:
+                        break
+                    if row.get("Above Threshold"):
+                        eligible_periods += 1
+
+                total_coupons = eligible_periods * coupon_per_period
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Coupon per Period", f"${coupon_per_period:.2f}")
+                col2.metric("Eligible Periods", eligible_periods)
+                col3.metric("Total Coupons", f"${total_coupons:.2f}")
+
+                # Total return
+                st.subheader("📊 Total Return")
+
+                if autocalled:
+                    principal_return = notional
+                    total_return = principal_return + total_coupons
+                    return_pct = ((total_return - notional) / notional) * 100
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Principal Returned", f"${principal_return:.2f}")
+                    col2.metric("Total Return", f"${total_return:.2f}")
+                    col3.metric("Return %", f"{return_pct:.2f}%")
+                else:
+                    final_price = obs_data[-1]["Close"]
+                    initial = params.get("initial", 1)
+
+                    if final_price >= threshold:
+                        principal_return = notional
+                    else:
+                        principal_return = notional * (final_price / initial)
+
+                    total_return = principal_return + total_coupons
+                    return_pct = ((total_return - notional) / notional) * 100
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Principal Returned", f"${principal_return:.2f}",
+                              delta=f"{principal_return - notional:.2f}" if principal_return != notional else None)
+                    col2.metric("Total Return", f"${total_return:.2f}")
+                    col3.metric("Return %", f"{return_pct:.2f}%",
+                              delta_color="inverse" if return_pct < 0 else "normal")
+
+            # Download results
+            st.subheader("💾 Download Results")
+
+            results_dict = {
+                "ticker": ticker,
+                "parameters": params,
+                "observation_schedule": df_obs.to_dict(orient="records"),
+                "autocalled": autocalled,
+                "call_date": call_date,
+                "summary": {
+                    "eligible_coupon_periods": eligible_periods if coupon_rate > 0 else None,
+                    "total_coupons": float(total_coupons) if coupon_rate > 0 else None,
+                    "principal_return": float(principal_return) if coupon_rate > 0 else None,
+                    "total_return": float(total_return) if coupon_rate > 0 else None,
+                    "return_pct": float(return_pct) if coupon_rate > 0 else None
+                }
+            }
+
+            json_str = json.dumps(results_dict, indent=2, default=str)
+            st.download_button(
+                label="📥 Download Complete Analysis",
+                data=json_str,
+                file_name=f"{ticker}_analysis_{dt.datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
+
+        except Exception as e:
+            st.error(f"❌ Error fetching prices: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":
