@@ -90,6 +90,139 @@ def html_to_text(raw: str) -> str:
         return raw
 
 
+# ========== ISSUER-SPECIFIC PARSING CONFIGURATIONS ==========
+
+ISSUER_CONFIGS = {
+    "Goldman Sachs": {
+        "initial_patterns": [
+            r"Initial\s+share\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",  # Returns 100% of initial
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "coupon determination date",
+            "observation date",
+        ],
+    },
+    "JP Morgan": {
+        "initial_patterns": [
+            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"(?:Interest\s+Barrier|Trigger\s+Value)[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            r"automatic(?:ally)?\s+call(?:ed)?",
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "review date",
+            "observation date",
+        ],
+    },
+    "UBS": {
+        "initial_patterns": [
+            r"Initial\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "observation date",
+            "determination date",
+        ],
+    },
+}
+
+
+def detect_issuer(text: str) -> Optional[str]:
+    """Auto-detect issuer from filing text."""
+    issuer_patterns = {
+        "Goldman Sachs": [r"GS\s+Finance\s+Corp", r"Goldman\s+Sachs\s+&\s+Co"],
+        "JP Morgan": [r"JPMorgan\s+Chase\s+Financial", r"J\.?P\.?\s*Morgan"],
+        "UBS": [r"UBS\s+AG", r"UBS\s+Financial"],
+        "Morgan Stanley": [r"Morgan\s+Stanley\s+Finance", r"Morgan\s+Stanley\s+&\s+Co"],
+        "Credit Suisse": [r"Credit\s+Suisse", r"CS\s+Finance"],
+        "HSBC": [r"HSBC\s+USA", r"HSBC\s+Bank"],
+        "Citigroup": [r"Citigroup\s+Global\s+Markets", r"Citibank"],
+        "Barclays": [r"Barclays\s+Bank", r"Barclays\s+Capital"],
+        "Bank of America": [r"Bank\s+of\s+America", r"BofA\s+Finance", r"Merrill\s+Lynch"],
+        "Royal Bank of Canada": [r"Royal\s+Bank\s+of\s+Canada", r"RBC\s+Capital"],
+        "Bank of Montreal": [r"Bank\s+of\s+Montreal", r"BMO\s+Capital"],
+        "CIBC": [r"CIBC\s+World\s+Markets", r"Canadian\s+Imperial\s+Bank"],
+    }
+
+    for issuer, patterns in issuer_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, text, flags=re.I):
+                return issuer
+
+    return None
+
+
+def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] = None) -> dict:
+    """Parse filing using issuer-specific configuration."""
+    result = {
+        "initial_price": None,
+        "threshold_dollar": None,
+        "autocall_level": None,
+        "coupon_payment": None,
+    }
+
+    # Parse initial price
+    for pattern in config.get("initial_patterns", []):
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            result["initial_price"] = float(m.group(1).replace(",", ""))
+            break
+
+    # Parse threshold
+    for pattern in config.get("threshold_patterns", []):
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            result["threshold_dollar"] = float(m.group(1).replace(",", ""))
+            break
+
+    # Parse autocall level
+    for pattern in config.get("autocall_patterns", []):
+        if pattern == r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price":
+            # Special case: no dollar amount, just set to initial
+            if re.search(pattern, text, flags=re.I) and initial:
+                result["autocall_level"] = initial
+                break
+        else:
+            m = re.search(pattern, text, flags=re.I)
+            if m:
+                result["autocall_level"] = float(m.group(1).replace(",", ""))
+                break
+
+    # Parse coupon payment
+    for pattern in config.get("coupon_patterns", []):
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            result["coupon_payment"] = float(m.group(1).replace(",", ""))
+            break
+
+    return result
+
+
+# ========== ORIGINAL PARSING FUNCTIONS (FALLBACK) ==========
+
 def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Parse initial price and threshold with sophisticated logic.
@@ -550,7 +683,7 @@ def display_sidebar():
     }
 
 
-def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]) -> Dict[str, Any]:
+def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any], issuer: str = "Auto-detect") -> Dict[str, Any]:
     """Analyze filing with advanced parsing."""
     result = {}
 
@@ -558,20 +691,46 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         # Convert to text for analysis
         text = html_to_text(content) if is_html else content
 
-        # Parse initial and threshold
-        initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
+        # Detect issuer if set to auto-detect
+        detected_issuer = None
+        if issuer == "Auto-detect":
+            detected_issuer = detect_issuer(text)
+            if detected_issuer:
+                st.info(f"📌 Detected issuer: **{detected_issuer}**")
+                issuer = detected_issuer
 
-        # Parse autocall level
-        autocall_level = parse_autocall_level(text, initial)
+        # Use issuer-specific parsing if available
+        if issuer in ISSUER_CONFIGS:
+            config = ISSUER_CONFIGS[issuer]
+            st.success(f"✅ Using {issuer}-specific parsing")
 
-        # Parse dates
+            # Parse with issuer config (first pass to get initial)
+            issuer_result = parse_with_issuer_config(text, config, None)
+            initial = issuer_result["initial_price"]
+
+            # Re-parse with initial value for autocall
+            issuer_result = parse_with_issuer_config(text, config, initial)
+
+            threshold_dollar = issuer_result["threshold_dollar"]
+            autocall_level = issuer_result["autocall_level"]
+            coupon_payment = issuer_result["coupon_payment"]
+
+            # Calculate threshold percentage
+            threshold_pct = None
+            if threshold_dollar and initial:
+                threshold_pct = (threshold_dollar / initial) * 100
+        else:
+            # Fall back to generic parsing
+            st.info("ℹ️ Using generic parsing (issuer not configured)")
+            initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
+            autocall_level = parse_autocall_level(text, initial)
+            coupon_payment = parse_coupon_payment(text)
+
+        # Parse dates (same for all issuers for now)
         dates = parse_dates_comprehensive(content, is_html)
 
-        # Parse coupon rate and payment
+        # Parse coupon rate and ticker (same for all)
         coupon_rate = parse_coupon_rate(text)
-        coupon_payment = parse_coupon_payment(text)
-
-        # Detect ticker
         ticker = detect_underlying_ticker(text)
 
         # Store results
@@ -583,8 +742,9 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         result["coupon_payment_per_period"] = coupon_payment
         result["dates"] = dates
         result["ticker"] = ticker
+        result["issuer"] = issuer if issuer != "Auto-detect" else detected_issuer
 
-        st.success("✅ Advanced parsing complete")
+        st.success("✅ Parsing complete")
 
     return result
 
@@ -864,9 +1024,19 @@ def main():
 
             st.success(f"✅ Loaded {uploaded_file.name} ({len(content):,} characters)")
 
+            # Issuer selection
+            st.subheader("🏦 Select Issuer")
+            issuer = st.selectbox(
+                "Choose the issuing bank (or let the system auto-detect):",
+                ["Auto-detect", "Goldman Sachs", "JP Morgan", "UBS", "Morgan Stanley",
+                 "Credit Suisse", "HSBC", "Citigroup", "Barclays", "Bank of America",
+                 "Royal Bank of Canada", "Bank of Montreal", "CIBC"],
+                help="Select the investment bank that issued this structured product for more accurate parsing"
+            )
+
             # Analyze with advanced parsing
             if st.button("🚀 Analyze Filing", type="primary", use_container_width=True):
-                result = analyze_filing_advanced(content, is_html, options)
+                result = analyze_filing_advanced(content, is_html, options, issuer=issuer)
 
                 # Store in session state
                 st.session_state["parsed_result"] = result
