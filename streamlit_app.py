@@ -381,9 +381,13 @@ def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]
     return level
 
 
-def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], List[str]]:
+def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = None) -> Tuple[List[dt.date], List[str]]:
     """
     Extract observation dates from HTML tables - much more accurate than regex.
+
+    Args:
+        html: HTML content to parse
+        issuer: Optional issuer name to use issuer-specific date column patterns
 
     Returns: (dates, debug_info) where debug_info contains details about extraction
     """
@@ -392,6 +396,13 @@ def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], Lis
         soup = BeautifulSoup(html, "lxml")
         dates: List[dt.date] = []
         debug_info: List[str] = []
+
+        # Get issuer-specific date column patterns if available
+        issuer_patterns = []
+        if issuer and issuer in ISSUER_CONFIGS:
+            issuer_patterns = ISSUER_CONFIGS[issuer].get("date_column_patterns", [])
+            if issuer_patterns:
+                debug_info.append(f"Using {issuer}-specific date column patterns: {issuer_patterns}")
 
         for tbl_idx, tbl in enumerate(soup.find_all("table")):
             rows = []
@@ -407,21 +418,41 @@ def extract_observation_dates_from_tables(html: str) -> Tuple[List[dt.date], Lis
             date_col_idx = None
             matched_header = None
 
-            # Look for date columns with expanded patterns
-            for j, h in enumerate(header):
-                # Skip contingent payment dates AND coupon payment dates - we only want observation/determination dates
-                if re.search(r"(contingent\s+payment|coupon\s+payment|payment\s+date)", h, flags=re.I):
-                    debug_info.append(f"Table {tbl_idx + 1}: Skipping payment date column: '{h}'")
-                    continue
+            # First pass: Try issuer-specific patterns if available
+            if issuer_patterns:
+                for j, h in enumerate(header):
+                    # Skip payment date columns
+                    if re.search(r"(contingent\s+payment|coupon\s+payment|payment\s+date)", h, flags=re.I):
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping payment date column: '{h}'")
+                        continue
 
-                # Match observation/determination date columns
-                if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
-                           r"determination\s+date|pricing\s+date|observation\s+period|"
-                           r"autocall\s+observation|autocall\s+valuation)", h, flags=re.I):
-                    date_col_idx = j
-                    matched_header = h
-                    break
+                    # Check against issuer-specific patterns
+                    for pattern in issuer_patterns:
+                        if re.search(pattern, h, flags=re.I):
+                            date_col_idx = j
+                            matched_header = h
+                            debug_info.append(f"Table {tbl_idx + 1}: Matched {issuer} pattern '{pattern}' in column '{h}'")
+                            break
+                    if date_col_idx is not None:
+                        break
 
+            # Second pass: Generic patterns if no issuer match
+            if date_col_idx is None:
+                for j, h in enumerate(header):
+                    # Skip contingent payment dates AND coupon payment dates - we only want observation/determination dates
+                    if re.search(r"(contingent\s+payment|coupon\s+payment|payment\s+date)", h, flags=re.I):
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping payment date column: '{h}'")
+                        continue
+
+                    # Match observation/determination date columns
+                    if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
+                               r"determination\s+date|pricing\s+date|observation\s+period|"
+                               r"autocall\s+observation|autocall\s+valuation|review\s+date)", h, flags=re.I):
+                        date_col_idx = j
+                        matched_header = h
+                        break
+
+            # Third pass: Any column with "date"
             if date_col_idx is None:
                 # Try to find any column with "date" in the header
                 for j, h in enumerate(header):
@@ -545,14 +576,20 @@ def extract_review_dates_from_text(text: str) -> List[dt.date]:
     return sorted(set(dates))
 
 
-def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]:
-    """Comprehensive date parsing with table extraction."""
+def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[str] = None) -> Dict[str, Any]:
+    """Comprehensive date parsing with table extraction.
+
+    Args:
+        raw_content: HTML or text content to parse
+        is_html: Whether content is HTML
+        issuer: Optional issuer name for issuer-specific date extraction
+    """
     dates = {}
     debug_info = []
 
     # Try table extraction first (most accurate)
     if is_html:
-        obs_dates, extraction_debug = extract_observation_dates_from_tables(raw_content)
+        obs_dates, extraction_debug = extract_observation_dates_from_tables(raw_content, issuer)
         debug_info.extend(extraction_debug)
         if obs_dates:
             dates["observation_dates"] = [d.isoformat() for d in obs_dates]
@@ -771,8 +808,8 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
             autocall_level = parse_autocall_level(text, initial)
             coupon_payment = parse_coupon_payment(text)
 
-        # Parse dates (same for all issuers for now)
-        dates = parse_dates_comprehensive(content, is_html)
+        # Parse dates with issuer-specific patterns
+        dates = parse_dates_comprehensive(content, is_html, issuer if issuer != "Auto-detect" else None)
 
         # Parse coupon rate and ticker (same for all)
         coupon_rate = parse_coupon_rate(text)
@@ -944,40 +981,49 @@ def display_parsing_results(result: Dict[str, Any]):
     edited_dates = []
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
         col1, col2, col3 = st.columns([3, 1, 0.5])
+
+        # Text input for easy date entry (format: YYYY-MM-DD or MM/DD/YYYY)
         with col1:
-            # Text input for easy date entry (format: YYYY-MM-DD or MM/DD/YYYY)
             date_str = st.text_input(
                 f"Observation Date #{idx + 1}",
                 value=obs_date.isoformat(),
                 key=f"obs_date_text_{idx}",
                 help="Format: YYYY-MM-DD or MM/DD/YYYY or any common date format"
             )
-            try:
-                # Try to parse the entered date
-                new_date = parse_date(date_str)
-                if new_date:
-                    edited_dates.append(new_date)
-                else:
-                    st.error(f"Could not parse date: {date_str}")
-                    edited_dates.append(obs_date)  # Keep old value
-            except Exception:
-                st.error(f"Invalid date format: {date_str}")
-                edited_dates.append(obs_date)  # Keep old value
+
+        # Calendar picker as alternative
         with col2:
-            # Calendar picker as alternative
             cal_date = st.date_input(
                 "📅",
                 value=obs_date,
                 key=f"obs_date_cal_{idx}",
                 label_visibility="collapsed"
             )
-            # If calendar was used (different from current), update
-            if cal_date != obs_date:
-                edited_dates[-1] = cal_date
+
+        # Remove button
         with col3:
             if st.button("🗑️", key=f"remove_{idx}", help="Remove this date"):
                 st.session_state["edited_observation_dates"].pop(idx)
                 st.rerun()
+
+        # Determine which date to use (calendar takes priority if changed)
+        final_date = obs_date  # Default to original
+
+        # Check if calendar was changed
+        if cal_date != obs_date:
+            final_date = cal_date
+        # Otherwise, try to parse text input
+        elif date_str != obs_date.isoformat():
+            try:
+                parsed_date = parse_date(date_str)
+                if parsed_date:
+                    final_date = parsed_date
+                else:
+                    st.error(f"Could not parse date: {date_str}")
+            except Exception as e:
+                st.error(f"Invalid date format: {date_str}")
+
+        edited_dates.append(final_date)
 
     # Update session state with edited dates
     st.session_state["edited_observation_dates"] = edited_dates
