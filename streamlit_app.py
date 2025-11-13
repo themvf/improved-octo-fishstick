@@ -674,6 +674,51 @@ def display_sidebar():
 
     st.sidebar.divider()
 
+    # Bank terminology reference
+    st.sidebar.subheader("📖 Bank Terminology Reference")
+    with st.sidebar.expander("View terminology differences across banks"):
+        st.caption("**How different banks refer to the same concepts:**")
+
+        # Create terminology comparison
+        terminology_data = {
+            "Concept": ["Initial Price", "Downside Threshold", "Autocall Trigger", "Coupon Payment", "Observation Dates"],
+            "Goldman Sachs": [
+                "Initial share price",
+                "Downside threshold level",
+                "≥ initial share price",
+                "Contingent quarterly coupon",
+                "Coupon determination date"
+            ],
+            "JP Morgan": [
+                "Initial Value",
+                "Interest Barrier / Trigger Value",
+                "Automatically called",
+                "Contingent Interest Payment",
+                "Review date"
+            ],
+            "UBS": [
+                "Initial price",
+                "Downside threshold level",
+                "Call threshold level",
+                "Contingent Interest Payment",
+                "Observation date"
+            ],
+            "Other Banks": [
+                "Various formats",
+                "Threshold level / Barrier",
+                "Early redemption / Call",
+                "Payment per period",
+                "Determination date"
+            ]
+        }
+
+        df_terms = pd.DataFrame(terminology_data)
+        st.dataframe(df_terms, hide_index=True, use_container_width=True)
+
+        st.caption("💡 **Tip:** Select the correct issuer above for more accurate parsing!")
+
+    st.sidebar.divider()
+
     st.sidebar.caption("Advanced parsing with context-aware logic, table extraction, and multi-issuer support.")
 
     return {
