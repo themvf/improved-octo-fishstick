@@ -404,6 +404,11 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if issuer_patterns:
                 debug_info.append(f"Using {issuer}-specific date column patterns: {issuer_patterns}")
 
+        # Date validation boundaries (structured products typically mature within 10 years)
+        today = dt.date.today()
+        min_date = today - dt.timedelta(days=365 * 15)  # Allow up to 15 years in the past
+        max_date = today + dt.timedelta(days=365 * 10)   # Allow up to 10 years in the future
+
         for tbl_idx, tbl in enumerate(soup.find_all("table")):
             rows = []
             for tr in tbl.find_all("tr"):
@@ -412,6 +417,13 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                     rows.append(cells)
 
             if not rows:
+                continue
+
+            # Check if table looks like an example or hypothetical scenario
+            # Look for keywords in the entire table text
+            table_text = " ".join([" ".join(row) for row in rows])
+            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario)", table_text, flags=re.I):
+                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical data")
                 continue
 
             header = rows[0]
@@ -470,20 +482,37 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
 
             debug_info.append(f"Table {tbl_idx + 1}: Found date column '{matched_header}' at index {date_col_idx}")
 
-            # Extract dates from that column
+            # Extract dates from that column with validation
             found_in_table = 0
+            skipped_dates = []
+            extracted_dates = []
+
             for r in rows[1:]:
                 if date_col_idx < len(r):
                     cell_text = r[date_col_idx]
                     d = parse_date(cell_text)
                     if d:
-                        dates.append(d)
-                        found_in_table += 1
+                        # Validate date is within reasonable range
+                        if min_date <= d <= max_date:
+                            dates.append(d)
+                            extracted_dates.append(d.isoformat())
+                            found_in_table += 1
+                        else:
+                            skipped_dates.append(f"{d.isoformat()} (out of range)")
 
-            debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} dates")
+            if extracted_dates:
+                debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} valid dates: {', '.join(extracted_dates[:5])}" +
+                                (" ..." if len(extracted_dates) > 5 else ""))
+            if skipped_dates:
+                debug_info.append(f"Table {tbl_idx + 1}: Skipped {len(skipped_dates)} out-of-range dates: {', '.join(skipped_dates[:3])}" +
+                                (" ..." if len(skipped_dates) > 3 else ""))
 
         unique_dates = sorted(set(dates))
         debug_info.append(f"Total unique dates found: {len(unique_dates)}")
+
+        if unique_dates:
+            debug_info.append(f"Date range: {unique_dates[0].isoformat()} to {unique_dates[-1].isoformat()}")
+
         return unique_dates, debug_info
     except Exception as e:
         return [], [f"Error during extraction: {str(e)}"]
