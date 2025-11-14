@@ -1571,6 +1571,13 @@ def run_full_analysis(params: Dict[str, Any]):
                     call_date = row["Observation Date"]
                     break
 
+            # Get parameters early for use in all sections
+            coupon_rate = params.get("coupon_rate", 0)
+            notional = params.get("notional", 1000)
+            payments_per_year = params.get("payments_per_year", 4)
+            threshold = params.get("threshold_dollar", 0)
+            initial = params.get("initial", 1)
+
             if autocalled:
                 st.success(f"✅ **AUTOCALLED** on {call_date}")
                 st.write(f"Product would be called early. Investor receives principal plus accrued coupons.")
@@ -1578,8 +1585,6 @@ def run_full_analysis(params: Dict[str, Any]):
                 st.info("ℹ️ **Not Autocalled** - Product runs to maturity")
 
                 final_price = obs_data[-1]["Close"]
-                threshold = params.get("threshold_dollar", 0)
-                initial = params.get("initial", 1)
 
                 if final_price >= threshold:
                     st.success(f"✅ Final price (${final_price:.2f}) ≥ Threshold (${threshold:.2f})")
@@ -1616,11 +1621,6 @@ def run_full_analysis(params: Dict[str, Any]):
             # Coupon summary
             st.subheader("💵 Contingent Payment Summary")
 
-            coupon_rate = params.get("coupon_rate", 0)
-            notional = params.get("notional", 1000)
-            payments_per_year = params.get("payments_per_year", 4)
-            threshold = params.get("threshold_dollar", 0)
-
             if coupon_rate > 0:
                 coupon_per_period = notional * (coupon_rate / payments_per_year)
 
@@ -1652,7 +1652,6 @@ def run_full_analysis(params: Dict[str, Any]):
                     col3.metric("Return %", f"{return_pct:.2f}%")
                 else:
                     final_price = obs_data[-1]["Close"]
-                    initial = params.get("initial", 1)
 
                     if final_price >= threshold:
                         principal_return = notional
