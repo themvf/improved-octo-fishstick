@@ -572,37 +572,78 @@ def parse_coupon_payment(text: str) -> Optional[float]:
     return None
 
 
-def extract_review_dates_from_text(text: str) -> List[dt.date]:
+def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> Tuple[List[dt.date], List[str]]:
     """
     Extract review/observation dates from text when table extraction fails.
     Looks for patterns like "Review Dates: Jan 1, 2024, Feb 1, 2024, ..."
+
+    Args:
+        text: Text content to parse
+        issuer: Optional issuer name for issuer-specific patterns
+
+    Returns:
+        Tuple of (dates list, debug info list)
     """
     dates = []
+    debug_info = []
 
-    # Look for "Review Dates:" or "Observation Dates:" followed by comma-separated dates
-    # Stop at natural boundaries like "subject to", "Interest Payment", etc.
-    patterns = [
-        r"Review\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-        r"Observation\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-        r"Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-        r"Coupon\s+Determination\s+Dates[*\s]*:\s*([^\.]+?)(?:,\s*subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)"
-    ]
+    # Build patterns based on issuer
+    base_patterns = []
 
-    for pattern in patterns:
+    if issuer == "UBS":
+        # UBS uses "Determination dates:" (note: lowercase 'd' and often tab after colon)
+        base_patterns = [
+            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+        ]
+        debug_info.append("Using UBS-specific text date patterns")
+    elif issuer == "Goldman Sachs":
+        # Goldman Sachs uses "Coupon determination dates:"
+        base_patterns = [
+            r"Coupon\s+determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+        ]
+        debug_info.append("Using Goldman Sachs-specific text date patterns")
+    elif issuer == "JP Morgan":
+        # JP Morgan uses "Review dates:"
+        base_patterns = [
+            r"Review\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+        ]
+        debug_info.append("Using JP Morgan-specific text date patterns")
+    else:
+        # Generic patterns for all other issuers
+        base_patterns = [
+            r"Review\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+            r"Observation\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+            r"Determination\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
+            r"Coupon\s+[Dd]etermination\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)"
+        ]
+
+    for pattern in base_patterns:
         match = re.search(pattern, text, flags=re.I | re.DOTALL)
         if match:
             dates_text = match.group(1)
+            debug_info.append(f"Matched pattern: {pattern[:50]}...")
+            debug_info.append(f"Extracted text: {dates_text[:100]}...")
+
             # Find all dates in this text
             date_matches = DATE_REGEX.findall(dates_text)
+            debug_info.append(f"Found {len(date_matches)} date strings in text")
+
             for date_str in date_matches:
                 d = parse_date(date_str)
                 if d:
                     dates.append(d)
 
             if dates:
+                debug_info.append(f"Successfully parsed {len(dates)} dates from text")
                 break  # Found dates, no need to try other patterns
 
-    return sorted(set(dates))
+    if not dates:
+        debug_info.append("No dates found in text extraction")
+
+    return sorted(set(dates)), debug_info
 
 
 def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[str] = None) -> Dict[str, Any]:
@@ -630,7 +671,8 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
 
     if "observation_dates" not in dates or not dates["observation_dates"]:
         debug_info.append("Table extraction found no dates, trying text parsing...")
-        text_dates = extract_review_dates_from_text(text)
+        text_dates, text_debug = extract_review_dates_from_text(text, issuer)
+        debug_info.extend(text_debug)
         if text_dates:
             dates["observation_dates"] = [d.isoformat() for d in text_dates]
             if not dates.get("pricing_date"):
