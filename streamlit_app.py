@@ -1587,7 +1587,31 @@ def run_full_analysis(params: Dict[str, Any]):
                 else:
                     loss_pct = ((final_price - initial) / initial) * 100
                     st.error(f"❌ Final price (${final_price:.2f}) < Threshold (${threshold:.2f})")
-                    st.write(f"Investor participates in downside: **{loss_pct:.2f}%** loss on principal")
+
+                    # Show principal loss prominently
+                    st.subheader("⚠️ Principal Loss (Downside Participation)")
+                    principal_loss_dollars = notional * (loss_pct / 100)
+                    principal_returned_downside = notional + principal_loss_dollars
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric(
+                        "Principal Loss %",
+                        f"{loss_pct:.2f}%",
+                        delta=f"{loss_pct:.2f}%",
+                        delta_color="inverse"
+                    )
+                    col2.metric(
+                        "Principal Loss $",
+                        f"${abs(principal_loss_dollars):.2f}",
+                        delta=f"-${abs(principal_loss_dollars):.2f}",
+                        delta_color="inverse"
+                    )
+                    col3.metric(
+                        "Principal Returned",
+                        f"${principal_returned_downside:.2f}",
+                        delta=f"${principal_loss_dollars:.2f}",
+                        delta_color="inverse"
+                    )
 
             # Coupon summary
             st.subheader("💵 Contingent Payment Summary")
@@ -1615,7 +1639,7 @@ def run_full_analysis(params: Dict[str, Any]):
                 col3.metric("Total Payments", f"${total_coupons:.2f}")
 
                 # Total return
-                st.subheader("📊 Total Return")
+                st.subheader("📊 Total Return (Principal + Contingent Payments)")
 
                 if autocalled:
                     principal_return = notional
@@ -1644,6 +1668,17 @@ def run_full_analysis(params: Dict[str, Any]):
                     col2.metric("Total Return", f"${total_return:.2f}")
                     col3.metric("Return %", f"{return_pct:.2f}%",
                               delta_color="inverse" if return_pct < 0 else "normal")
+
+                    # Add explanation if there's downside participation
+                    if final_price < threshold:
+                        principal_loss_pct = ((principal_return - notional) / notional) * 100
+                        payment_offset_pct = return_pct - principal_loss_pct
+                        st.info(
+                            f"💡 **Explanation:** The contingent payments (${total_coupons:.2f}) offset "
+                            f"**{abs(payment_offset_pct):.2f}%** of your principal loss. "
+                            f"Principal loss: {principal_loss_pct:.2f}% + Payments: +{payment_offset_pct:.2f}% = "
+                            f"Total return: {return_pct:.2f}%"
+                        )
 
             # Download results
             st.subheader("💾 Download Results")
