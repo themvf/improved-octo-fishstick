@@ -147,6 +147,29 @@ ISSUER_CONFIGS = {
             "determination date",
         ],
     },
+    "Morgan Stanley": {
+        "initial_patterns": [
+            r"Initial\s+(?:share\s+)?price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Redemption\s+threshold[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "determination date",
+            "redemption determination date",
+            "observation date",
+        ],
+    },
 }
 
 
@@ -597,6 +620,15 @@ def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> T
             r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
         ]
         debug_info.append("Using UBS-specific text date patterns")
+    elif issuer == "Morgan Stanley":
+        # Morgan Stanley uses similar format to UBS: "Determination dates:" with tab
+        # Also uses "Redemption determination dates:"
+        base_patterns = [
+            r"Redemption\s+determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+        ]
+        debug_info.append("Using Morgan Stanley-specific text date patterns")
     elif issuer == "Goldman Sachs":
         # Goldman Sachs uses "Coupon determination dates:"
         base_patterns = [
@@ -809,7 +841,14 @@ def display_sidebar():
                 "Downside threshold level",
                 "Call threshold level",
                 "Contingent Interest Payment",
-                "Observation date"
+                "Determination date"
+            ],
+            "Morgan Stanley": [
+                "Initial price / Value",
+                "Threshold level",
+                "Redemption threshold",
+                "Contingent Interest Payment",
+                "Redemption determination date"
             ],
             "Other Banks": [
                 "Various formats",
