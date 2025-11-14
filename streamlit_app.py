@@ -271,8 +271,12 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
 
     # Parse autocall level
     for pattern in config.get("autocall_patterns", []):
-        if pattern == r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price":
-            # Special case: no dollar amount, just set to initial
+        # Special cases: patterns without dollar amounts
+        if pattern in [
+            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",
+            r"automatic(?:ally)?\s+call(?:ed)?"
+        ]:
+            # No dollar amount, just set to initial
             if re.search(pattern, text, flags=re.I) and initial:
                 result["autocall_level"] = initial
                 break
