@@ -143,9 +143,11 @@ ISSUER_CONFIGS = {
             r"Initial\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "threshold_patterns": [
+            r"Downside\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "autocall_patterns": [
+            r"Call\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "coupon_patterns": [
@@ -1074,35 +1076,25 @@ def display_parsing_results(result: Dict[str, Any]):
             key="threshold_dollar_input"
         )
 
-        threshold_pct = st.number_input(
-            "Threshold (%)",
-            value=float(result.get("threshold_pct") or 0),
-            format="%.2f",
-            help="Threshold as % of initial",
-            key="threshold_pct_input"
-        )
-
-        # Auto-calculate and show the relationship
-        if initial > 0:
-            if threshold_dollar > 0:
-                calculated_pct = (threshold_dollar / initial) * 100
-                if abs(calculated_pct - threshold_pct) > 0.1:  # If they don't match
-                    st.warning(f"⚠️ Mismatch detected! ${threshold_dollar:.2f} = {calculated_pct:.2f}% of ${initial:.2f}")
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        if st.button("✓ Use calculated %", key="use_calc_pct"):
-                            threshold_pct = calculated_pct
-                            st.rerun()
-                    with col_b:
-                        if st.button("✓ Use entered %", key="use_entered_pct"):
-                            threshold_dollar = initial * (threshold_pct / 100.0)
-                            st.rerun()
-                else:
-                    st.success(f"✓ ${threshold_dollar:.2f} = {calculated_pct:.2f}% of ${initial:.2f}")
-            elif threshold_pct > 0:
-                calculated_dollar = initial * (threshold_pct / 100.0)
-                st.info(f"💡 {threshold_pct:.2f}% of ${initial:.2f} = ${calculated_dollar:.2f}")
-                threshold_dollar = calculated_dollar
+        # Auto-calculate threshold percentage (non-editable)
+        if initial > 0 and threshold_dollar > 0:
+            threshold_pct = (threshold_dollar / initial) * 100
+            st.text_input(
+                "Threshold (%)",
+                value=f"{threshold_pct:.2f}",
+                disabled=True,
+                help="Automatically calculated from Threshold $ and Initial Price"
+            )
+            # Visual confirmation
+            st.caption(f"✓ {threshold_dollar:.2f} = {threshold_pct:.2f}% of {initial:.2f}")
+        else:
+            threshold_pct = 0.0
+            st.text_input(
+                "Threshold (%)",
+                value="0.00",
+                disabled=True,
+                help="Enter Threshold $ and Initial Price to calculate"
+            )
 
         st.divider()
 
