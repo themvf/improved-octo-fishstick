@@ -454,14 +454,8 @@ def display_parsing_results(result: Dict[str, Any]):
             help="Investment amount"
         )
 
-        frequency = st.selectbox(
-            "Payment Frequency",
-            ["Monthly (12x)", "Quarterly (4x)", "Semi-Annual (2x)", "Annual (1x)"],
-            index=1
-        )
-
-        freq_map = {"Monthly (12x)": 12, "Quarterly (4x)": 4, "Semi-Annual (2x)": 2, "Annual (1x)": 1}
-        payments_per_year = freq_map[frequency]
+        # Default to quarterly payments
+        payments_per_year = 4
 
     # Dates
     st.subheader("Key Dates")

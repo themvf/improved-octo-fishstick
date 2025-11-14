@@ -1060,31 +1060,24 @@ def display_parsing_results(result: Dict[str, Any]):
             help="Investment amount"
         )
 
-        frequency = st.selectbox(
-            "Payment Frequency",
-            ["Monthly (12x)", "Quarterly (4x)", "Semi-Annual (2x)", "Annual (1x)"],
-            index=1
-        )
+        # Calculate default contingent payment percentage from parsed dollar amount if available
+        default_contingent_pct = 0.0
+        if result.get("coupon_payment_per_period") and notional > 0:
+            default_contingent_pct = (result["coupon_payment_per_period"] / notional) * 100.0
 
-        freq_map = {"Monthly (12x)": 12, "Quarterly (4x)": 4, "Semi-Annual (2x)": 2, "Annual (1x)": 1}
-        payments_per_year = freq_map[frequency]
-
-        # Coupon payment in dollars per period
-        coupon_payment_per_period = st.number_input(
-            "Coupon Payment per Period ($)",
-            value=float(result.get("coupon_payment_per_period") or 0.0),
+        # Contingent payment percentage per period
+        contingent_payment_pct = st.number_input(
+            "Contingent Payment (%)",
+            value=float(result.get("contingent_payment_pct") or default_contingent_pct),
             format="%.4f",
-            help="Dollar amount paid per coupon period (e.g., $0.2625 per quarter)"
+            help="Percentage payment per period (e.g., 2.625% per period)"
         )
 
-        # Calculate annual percentage from dollar payment
-        if notional > 0 and coupon_payment_per_period > 0:
-            annual_coupon_dollars = coupon_payment_per_period * payments_per_year
-            coupon_rate_annual_pct = (annual_coupon_dollars / notional) * 100
-            st.info(f"📊 **Calculated Annual Coupon Rate:** {coupon_rate_annual_pct:.4f}%")
-            coupon_rate_decimal = coupon_rate_annual_pct / 100.0
-        else:
-            coupon_rate_decimal = 0.0
+        # Convert to decimal for calculations
+        coupon_rate_decimal = contingent_payment_pct / 100.0
+
+        # Default to quarterly payments for backwards compatibility
+        payments_per_year = 4
 
     # Dates
     st.subheader("Key Dates")
@@ -1187,7 +1180,7 @@ def display_parsing_results(result: Dict[str, Any]):
         "threshold_pct": threshold_pct,
         "autocall_level": autocall,
         "coupon_rate": coupon_rate_decimal,  # Already in decimal form
-        "coupon_payment_per_period": coupon_payment_per_period,
+        "contingent_payment_pct": contingent_payment_pct,
         "ticker": ticker,
         "notional": notional,
         "payments_per_year": payments_per_year,
@@ -1517,7 +1510,7 @@ def run_full_analysis(params: Dict[str, Any]):
                     st.write(f"Investor participates in downside: **{loss_pct:.2f}%** loss on principal")
 
             # Coupon summary
-            st.subheader("💵 Coupon Summary")
+            st.subheader("💵 Contingent Payment Summary")
 
             coupon_rate = params.get("coupon_rate", 0)
             notional = params.get("notional", 1000)
@@ -1537,9 +1530,9 @@ def run_full_analysis(params: Dict[str, Any]):
                 total_coupons = eligible_periods * coupon_per_period
 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Coupon per Period", f"${coupon_per_period:.2f}")
+                col1.metric("Contingent Payment per Period", f"${coupon_per_period:.2f}")
                 col2.metric("Eligible Periods", eligible_periods)
-                col3.metric("Total Coupons", f"${total_coupons:.2f}")
+                col3.metric("Total Payments", f"${total_coupons:.2f}")
 
                 # Total return
                 st.subheader("📊 Total Return")
