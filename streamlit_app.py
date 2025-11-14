@@ -170,6 +170,29 @@ ISSUER_CONFIGS = {
             "observation date",
         ],
     },
+    "Bank of America": {
+        "initial_patterns": [
+            r"Initial\s+(?:share\s+)?price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"automatic(?:ally)?\s+call(?:ed)?",
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "observation date",
+            "observation dates",
+            "determination date",
+        ],
+    },
 }
 
 
@@ -427,11 +450,6 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if issuer_patterns:
                 debug_info.append(f"Using {issuer}-specific date column patterns: {issuer_patterns}")
 
-        # Date validation boundaries (structured products typically mature within 10 years)
-        today = dt.date.today()
-        min_date = today - dt.timedelta(days=365 * 15)  # Allow up to 15 years in the past
-        max_date = today + dt.timedelta(days=365 * 10)   # Allow up to 10 years in the future
-
         for tbl_idx, tbl in enumerate(soup.find_all("table")):
             rows = []
             for tr in tbl.find_all("tr"):
@@ -505,9 +523,8 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
 
             debug_info.append(f"Table {tbl_idx + 1}: Found date column '{matched_header}' at index {date_col_idx}")
 
-            # Extract dates from that column with validation
+            # Extract dates from that column
             found_in_table = 0
-            skipped_dates = []
             extracted_dates = []
 
             for r in rows[1:]:
@@ -515,20 +532,13 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                     cell_text = r[date_col_idx]
                     d = parse_date(cell_text)
                     if d:
-                        # Validate date is within reasonable range
-                        if min_date <= d <= max_date:
-                            dates.append(d)
-                            extracted_dates.append(d.isoformat())
-                            found_in_table += 1
-                        else:
-                            skipped_dates.append(f"{d.isoformat()} (out of range)")
+                        dates.append(d)
+                        extracted_dates.append(d.isoformat())
+                        found_in_table += 1
 
             if extracted_dates:
-                debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} valid dates: {', '.join(extracted_dates[:5])}" +
+                debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} dates: {', '.join(extracted_dates[:5])}" +
                                 (" ..." if len(extracted_dates) > 5 else ""))
-            if skipped_dates:
-                debug_info.append(f"Table {tbl_idx + 1}: Skipped {len(skipped_dates)} out-of-range dates: {', '.join(skipped_dates[:3])}" +
-                                (" ..." if len(skipped_dates) > 3 else ""))
 
         unique_dates = sorted(set(dates))
         debug_info.append(f"Total unique dates found: {len(unique_dates)}")
@@ -643,6 +653,13 @@ def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> T
             r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
         ]
         debug_info.append("Using JP Morgan-specific text date patterns")
+    elif issuer == "Bank of America":
+        # Bank of America uses "Observation dates:"
+        base_patterns = [
+            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+        ]
+        debug_info.append("Using Bank of America-specific text date patterns")
     else:
         # Generic patterns for all other issuers
         base_patterns = [
@@ -849,6 +866,13 @@ def display_sidebar():
                 "Redemption threshold",
                 "Contingent Interest Payment",
                 "Redemption determination date"
+            ],
+            "Bank of America": [
+                "Initial price / Value",
+                "Threshold level",
+                "Call threshold / Autocall",
+                "Contingent Interest Payment",
+                "Observation dates"
             ],
             "Other Banks": [
                 "Various formats",
