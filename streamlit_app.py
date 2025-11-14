@@ -106,6 +106,10 @@ ISSUER_CONFIGS = {
         "coupon_patterns": [
             r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
         "date_column_patterns": [
             "coupon determination date",
             "observation date",
@@ -124,6 +128,11 @@ ISSUER_CONFIGS = {
         "coupon_patterns": [
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"each\s+security\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
         "date_column_patterns": [
             "review date",
             "observation date",
@@ -141,6 +150,11 @@ ISSUER_CONFIGS = {
         ],
         "coupon_patterns": [
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"principal\s+amount\s+per\s+security[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "date_column_patterns": [
             "observation date",
@@ -164,6 +178,10 @@ ISSUER_CONFIGS = {
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
         "date_column_patterns": [
             "determination date",
             "redemption determination date",
@@ -186,6 +204,10 @@ ISSUER_CONFIGS = {
         "coupon_patterns": [
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "date_column_patterns": [
             "observation date",
@@ -228,6 +250,7 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
         "threshold_dollar": None,
         "autocall_level": None,
         "coupon_payment": None,
+        "notional": None,
     }
 
     # Parse initial price
@@ -262,6 +285,13 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
         m = re.search(pattern, text, flags=re.I)
         if m:
             result["coupon_payment"] = float(m.group(1).replace(",", ""))
+            break
+
+    # Parse notional amount
+    for pattern in config.get("notional_patterns", []):
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            result["notional"] = float(m.group(1).replace(",", ""))
             break
 
     return result
@@ -605,6 +635,47 @@ def parse_coupon_payment(text: str) -> Optional[float]:
     return None
 
 
+def parse_notional(text: str) -> Optional[float]:
+    """Parse notional/principal amount."""
+    # Pattern 1: "per $X principal amount" or "per $X stated principal amount"
+    m_per = re.search(
+        r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+        text,
+        flags=re.I
+    )
+    if m_per:
+        return float(m_per.group(1).replace(",", ""))
+
+    # Pattern 2: "principal amount of $X" or "stated principal amount of $X"
+    m_of = re.search(
+        r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_of:
+        return float(m_of.group(1).replace(",", ""))
+
+    # Pattern 3: "each security has a principal amount of $X"
+    m_each = re.search(
+        r"each\s+(?:security|note)\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_each:
+        return float(m_each.group(1).replace(",", ""))
+
+    # Pattern 4: "principal amount per security: $X"
+    m_per_sec = re.search(
+        r"principal\s+amount\s+per\s+(?:security|note)[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        text,
+        flags=re.I
+    )
+    if m_per_sec:
+        return float(m_per_sec.group(1).replace(",", ""))
+
+    return None
+
+
 def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> Tuple[List[dt.date], List[str]]:
     """
     Extract review/observation dates from text when table extraction fails.
@@ -930,6 +1001,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
             threshold_dollar = issuer_result["threshold_dollar"]
             autocall_level = issuer_result["autocall_level"]
             coupon_payment = issuer_result["coupon_payment"]
+            notional = issuer_result["notional"]
 
             # Calculate threshold percentage
             threshold_pct = None
@@ -941,6 +1013,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
             initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
             autocall_level = parse_autocall_level(text, initial)
             coupon_payment = parse_coupon_payment(text)
+            notional = parse_notional(text)
 
         # Parse dates with issuer-specific patterns
         dates = parse_dates_comprehensive(content, is_html, issuer if issuer != "Auto-detect" else None)
@@ -956,6 +1029,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         result["autocall_level"] = autocall_level
         result["coupon_rate_annual"] = coupon_rate
         result["coupon_payment_per_period"] = coupon_payment
+        result["notional"] = notional
         result["dates"] = dates
         result["ticker"] = ticker
         result["issuer"] = issuer if issuer != "Auto-detect" else detected_issuer
@@ -1053,12 +1127,18 @@ def display_parsing_results(result: Dict[str, Any]):
             help="Stock ticker symbol"
         ).upper()
 
+        # Use detected notional if available, otherwise default to 1000.0
+        detected_notional = result.get("notional") or 1000.0
         notional = st.number_input(
             "Notional Amount ($)",
-            value=1000.0,
+            value=float(detected_notional),
             format="%.2f",
-            help="Investment amount"
+            help="Investment amount (auto-detected from filing if available)"
         )
+
+        # Show info if notional was detected
+        if result.get("notional"):
+            st.info(f"📊 **Detected notional:** ${result.get('notional'):,.2f} from filing")
 
         # Calculate default contingent payment percentage from parsed dollar amount if available
         default_contingent_pct = 0.0
