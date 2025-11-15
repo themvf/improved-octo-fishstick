@@ -1045,6 +1045,17 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
     return result
 
 
+def format_date_us(date_str: str) -> str:
+    """Format ISO date (YYYY-MM-DD) to US format (MM-DD-YYYY)."""
+    if not date_str or date_str == "N/A":
+        return "N/A"
+    try:
+        date_obj = dt.datetime.fromisoformat(date_str).date()
+        return date_obj.strftime("%m-%d-%Y")
+    except:
+        return date_str
+
+
 def display_parsing_results(result: Dict[str, Any]):
     """Display parsed results with edit capability."""
     st.header("📋 Parsed Information")
@@ -1080,25 +1091,13 @@ def display_parsing_results(result: Dict[str, Any]):
             key="threshold_dollar_input"
         )
 
-        # Auto-calculate threshold percentage (non-editable)
+        # Display calculated threshold percentage
         if initial > 0 and threshold_dollar > 0:
             threshold_pct = (threshold_dollar / initial) * 100
-            st.text_input(
-                "Threshold (%)",
-                value=f"{threshold_pct:.2f}",
-                disabled=True,
-                help="Automatically calculated from Threshold $ and Initial Price"
-            )
-            # Visual confirmation
-            st.caption(f"✓ {threshold_dollar:.2f} = {threshold_pct:.2f}% of {initial:.2f}")
+            st.caption(f"**Threshold %:** {threshold_pct:.2f}% (${threshold_dollar:.2f} = {threshold_pct:.2f}% of ${initial:.2f})")
         else:
             threshold_pct = 0.0
-            st.text_input(
-                "Threshold (%)",
-                value="0.00",
-                disabled=True,
-                help="Enter Threshold $ and Initial Price to calculate"
-            )
+            st.caption("**Threshold %:** Enter Threshold $ and Initial Price to calculate")
 
         st.divider()
 
@@ -1160,9 +1159,9 @@ def display_parsing_results(result: Dict[str, Any]):
     dates = result.get("dates", {})
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Pricing Date", dates.get("pricing_date", "N/A"))
-    col2.metric("Settlement Date", dates.get("settlement_date", "N/A"))
-    col3.metric("Maturity Date", dates.get("maturity_date", "N/A"))
+    col1.metric("Pricing Date", format_date_us(dates.get("pricing_date", "N/A")))
+    col2.metric("Settlement Date", format_date_us(dates.get("settlement_date", "N/A")))
+    col3.metric("Maturity Date", format_date_us(dates.get("maturity_date", "N/A")))
 
     # Editable Observation Dates
     st.subheader("📅 Observation Dates (Editable)")
@@ -1185,13 +1184,13 @@ def display_parsing_results(result: Dict[str, Any]):
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
         col1, col2, col3 = st.columns([3, 1, 0.5])
 
-        # Text input for easy date entry (format: YYYY-MM-DD or MM/DD/YYYY)
+        # Text input for easy date entry (format: MM-DD-YYYY)
         with col1:
             date_str = st.text_input(
                 f"Observation Date #{idx + 1}",
-                value=obs_date.isoformat(),
+                value=obs_date.strftime("%m-%d-%Y"),
                 key=f"obs_date_text_{idx}",
-                help="Format: YYYY-MM-DD or MM/DD/YYYY or any common date format"
+                help="Format: MM-DD-YYYY or YYYY-MM-DD or MM/DD/YYYY"
             )
 
         # Calendar picker as alternative
@@ -1216,7 +1215,7 @@ def display_parsing_results(result: Dict[str, Any]):
         if cal_date != obs_date:
             final_date = cal_date
         # Otherwise, try to parse text input
-        elif date_str != obs_date.isoformat():
+        elif date_str != obs_date.strftime("%m-%d-%Y"):
             try:
                 parsed_date = parse_date(date_str)
                 if parsed_date:
@@ -1429,8 +1428,8 @@ def run_full_analysis(params: Dict[str, Any]):
                     actual_date = prices_before.index[-1].date()
 
                     row = {
-                        "Observation Date": obs_date.isoformat(),
-                        "Actual Date": actual_date.isoformat(),
+                        "Observation Date": obs_date.strftime("%m-%d-%Y"),
+                        "Actual Date": actual_date.strftime("%m-%d-%Y"),
                         "Close": close_price,
                         "Initial": params.get("initial", 0),
                         "Threshold": params.get("threshold_dollar", 0),
@@ -1509,7 +1508,7 @@ def run_full_analysis(params: Dict[str, Any]):
                 obs_dates_for_chart.append(actual_date)
                 obs_prices_for_chart.append(close_price)
 
-                # Create label with price and autocall status
+                # Create label with price and autocall status (date already in MM-DD-YYYY format)
                 label = f"Obs #{idx+1}<br>Date: {row['Observation Date']}<br>Price: ${close_price:.2f}"
                 if row.get("Autocall Triggered"):
                     label += "<br>✅ AUTOCALLED"
