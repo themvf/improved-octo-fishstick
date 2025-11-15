@@ -499,9 +499,13 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             # Check if table looks like an example or hypothetical scenario
             # Look for keywords in the entire table text
             table_text = " ".join([" ".join(row) for row in rows])
-            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario)", table_text, flags=re.I):
+            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario|assumed)", table_text, flags=re.I):
                 debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical data")
                 continue
+
+            # Also check the context before the table (look at previous text)
+            # This helps catch tables preceded by "Example:" or "The following is hypothetical:"
+            # (Would require access to surrounding text, skipping for now)
 
             header = rows[0]
             date_col_idx = None
@@ -559,22 +563,52 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
 
             debug_info.append(f"Table {tbl_idx + 1}: Found date column '{matched_header}' at index {date_col_idx}")
 
+            # For UBS, verify this is the correct table by checking for "Contingent Coupon" or "Contingent Interest" in headers
+            if issuer == "UBS":
+                has_coupon_column = any(
+                    re.search(r"contingent\s+(coupon|interest|payment)", h, flags=re.I)
+                    for h in header
+                )
+                if not has_coupon_column:
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - UBS table missing 'Contingent Coupon' column")
+                    continue
+                else:
+                    debug_info.append(f"Table {tbl_idx + 1}: ✓ Verified UBS observation table structure")
+
             # Extract dates from that column
             found_in_table = 0
             extracted_dates = []
+            table_dates = []  # Store dates for this table only
 
             for r in rows[1:]:
                 if date_col_idx < len(r):
                     cell_text = r[date_col_idx]
                     d = parse_date(cell_text)
                     if d:
-                        dates.append(d)
+                        table_dates.append(d)
                         extracted_dates.append(d.isoformat())
                         found_in_table += 1
 
-            if extracted_dates:
+            # Validate dates before accepting this table
+            # Reject tables with dates too far in the future (likely hypothetical)
+            if table_dates:
+                max_date = max(table_dates)
+                current_year = dt.date.today().year
+                # Allow up to 10 years in the future for long-term notes
+                if max_date.year > current_year + 10:
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in future (year {max_date.year})")
+                    continue
+
+                # If we get here, dates are valid - add them to the main list
+                dates.extend(table_dates)
                 debug_info.append(f"Table {tbl_idx + 1}: Extracted {found_in_table} dates: {', '.join(extracted_dates[:5])}" +
                                 (" ..." if len(extracted_dates) > 5 else ""))
+
+                # For UBS and other issuers, use ONLY the first valid table found
+                # This prevents mixing real observation dates with hypothetical examples
+                if issuer in ["UBS", "JP Morgan", "Morgan Stanley", "Goldman Sachs", "Bank of America"] and len(table_dates) >= 3:
+                    debug_info.append(f"Table {tbl_idx + 1}: Using this table as primary source (found {len(table_dates)} dates for {issuer})")
+                    break  # Stop looking for more tables
 
         unique_dates = sorted(set(dates))
         debug_info.append(f"Total unique dates found: {len(unique_dates)}")
