@@ -140,23 +140,28 @@ ISSUER_CONFIGS = {
     },
     "UBS": {
         "initial_patterns": [
-            r"Initial\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Initial\s+[Pp]rice[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "threshold_patterns": [
+            r"Trigger\s+[Pp]rice[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Coupon\s+[Bb]arrier[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Downside\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "autocall_patterns": [
+            r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+price",  # UBS autocall at 100%
             r"Call\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
             r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "coupon_patterns": [
+            r"Contingent\s+[Cc]oupon\s+[Rr]ate[^:]{0,20}:\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*per\s+annum",
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "notional_patterns": [
+            r"\$\s*([0-9,]+(?:\.[0-9]+)?)\s+per\s+security",
+            r"[Pp]rincipal\s+[Aa]mount[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)\s+per\s+security",
             r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
             r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"principal\s+amount\s+per\s+security[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "date_column_patterns": [
             "observation date",
@@ -252,6 +257,7 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
         "threshold_dollar": None,
         "autocall_level": None,
         "coupon_payment": None,
+        "coupon_rate_pct": None,  # For percentage-based coupons
         "notional": None,
     }
 
@@ -274,6 +280,7 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
         # Special cases: patterns without dollar amounts
         if pattern in [
             r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",
+            r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+price",  # UBS variant
             r"automatic(?:ally)?\s+call(?:ed)?"
         ]:
             # No dollar amount, just set to initial
@@ -286,11 +293,16 @@ def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] =
                 result["autocall_level"] = float(m.group(1).replace(",", ""))
                 break
 
-    # Parse coupon payment
+    # Parse coupon payment (dollar amount or percentage)
     for pattern in config.get("coupon_patterns", []):
         m = re.search(pattern, text, flags=re.I)
         if m:
-            result["coupon_payment"] = float(m.group(1).replace(",", ""))
+            value = float(m.group(1).replace(",", ""))
+            # Check if pattern is for percentage (contains "% per annum")
+            if "per\s+annum" in pattern:
+                result["coupon_rate_pct"] = value  # Annual percentage rate
+            else:
+                result["coupon_payment"] = value  # Dollar amount
             break
 
     # Parse notional amount
@@ -1041,12 +1053,19 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
             threshold_dollar = issuer_result["threshold_dollar"]
             autocall_level = issuer_result["autocall_level"]
             coupon_payment = issuer_result["coupon_payment"]
+            coupon_rate_pct = issuer_result.get("coupon_rate_pct")  # Annual % rate
             notional = issuer_result["notional"]
 
             # Calculate threshold percentage
             threshold_pct = None
             if threshold_dollar and initial:
                 threshold_pct = (threshold_dollar / initial) * 100
+
+            # Convert annual coupon % to quarterly % if needed
+            contingent_payment_pct = None
+            if coupon_rate_pct:
+                # Assume quarterly payments (4 per year) - can be adjusted
+                contingent_payment_pct = coupon_rate_pct / 4
         else:
             # Fall back to generic parsing
             st.info("ℹ️ Using generic parsing (issuer not configured)")
@@ -1054,12 +1073,14 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
             autocall_level = parse_autocall_level(text, initial)
             coupon_payment = parse_coupon_payment(text)
             notional = parse_notional(text)
+            coupon_rate_pct = None
+            contingent_payment_pct = None
 
         # Parse dates with issuer-specific patterns
         dates = parse_dates_comprehensive(content, is_html, issuer if issuer != "Auto-detect" else None)
 
         # Parse coupon rate and ticker (same for all)
-        coupon_rate = parse_coupon_rate(text)
+        coupon_rate = parse_coupon_rate(text) if not coupon_rate_pct else coupon_rate_pct
         ticker = detect_underlying_ticker(text)
 
         # Store results
@@ -1069,6 +1090,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
         result["autocall_level"] = autocall_level
         result["coupon_rate_annual"] = coupon_rate
         result["coupon_payment_per_period"] = coupon_payment
+        result["contingent_payment_pct"] = contingent_payment_pct  # Store the calculated quarterly %
         result["notional"] = notional
         result["dates"] = dates
         result["ticker"] = ticker
