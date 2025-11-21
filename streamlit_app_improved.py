@@ -1,0 +1,587 @@
+"""
+Improved Streamlit Web Application for Structured Products Analysis
+
+Enhanced with sophisticated parsing logic from single_autocall_local_fixed.py
+"""
+
+import streamlit as st
+import json
+import tempfile
+import pandas as pd
+import plotly.graph_objects as go
+import re
+import datetime as dt
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple
+from dateutil import parser as dp
+
+from structured_products.pdf import read_filing_content, is_pdf_supported
+
+
+# Page configuration
+st.set_page_config(
+    page_title="Structured Products Analyzer",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border-left: 5px solid #28a745;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        border-left: 5px solid #ffc107;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ========== IMPROVED PARSING FUNCTIONS (from reference code) ==========
+
+def parse_date(ds: str) -> Optional[dt.date]:
+    """Parse date string with fuzzy matching."""
+    try:
+        return dp.parse(ds, fuzzy=True).date()
+    except Exception:
+        return None
+
+
+DATE_REGEX = re.compile(r"""(?ix)
+\b(?:
+ (?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|
+ Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)
+ \s+\d{1,2},\s+\d{4}
+ | \d{4}-\d{2}-\d{2}
+ | \d{1,2}/\d{1,2}/\d{2,4}
+)\b""")
+
+
+MONEY_RE = re.compile(r"\$?\s*([0-9]{1,3}(?:[,][0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)")
+PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
+
+
+def html_to_text(raw: str) -> str:
+    """Convert HTML to plain text."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(raw, "lxml")
+        return soup.get_text("\n")
+    except Exception:
+        return raw
+
+
+def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Parse initial price and threshold with sophisticated logic.
+
+    Returns: (initial, threshold_dollar, threshold_pct_of_initial)
+
+    Key improvements:
+    - Looks NEAR specific headings (tight 250-char window)
+    - Prefers precise dollar amounts immediately after heading
+    - Cross-validates $ vs % values
+    - Sanity checks to reject stray numbers
+    """
+    # Initial Share Price
+    initial = None
+    m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
+    if m_init:
+        initial = float(m_init.group(1).replace(",", ""))
+
+    threshold_dollar: Optional[float] = None
+    threshold_pct: Optional[float] = None
+
+    # 1) Prefer text right AFTER the heading (tight window)
+    for m in re.finditer(r"(downside\s+threshold\s+level|threshold\s+level|barrier\s+level)", text, flags=re.I):
+        start = m.end()  # look only AFTER the phrase
+        end = min(len(text), m.end() + 250)  # tight window
+        snippet = text[start:end]
+
+        # Prefer high-precision dollar (e.g., 178.3795)
+        m_d = re.search(r"\$?\s*([0-9]{2,5}\.[0-9]{2,5})", snippet)
+        if not m_d:
+            m_d = MONEY_RE.search(snippet)
+
+        # Percentage
+        m_p = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:of\s+the\s+initial\s+share\s+price)?",
+                       snippet, flags=re.I)
+
+        if m_d:
+            threshold_dollar = float(m_d.group(1).replace(",", ""))
+        if m_p:
+            threshold_pct = float(m_p.group(1))
+
+        if (threshold_dollar is not None) or (threshold_pct is not None):
+            break
+
+    # 2) Wider fallback if nothing found
+    if threshold_dollar is None:
+        m_any_d = re.search(r"threshold\s+level[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
+        if m_any_d:
+            threshold_dollar = float(m_any_d.group(1).replace(",", ""))
+
+    if threshold_pct is None:
+        m_any_p = re.search(r"threshold\s+level[^%]*([0-9]+(?:\.[0-9]+)?)\s*%", text, flags=re.I)
+        if m_any_p:
+            threshold_pct = float(m_any_p.group(1))
+
+    # 3) Compute $ from % if only % found
+    if threshold_dollar is None and threshold_pct is not None and initial is not None:
+        threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
+
+    # 4) Sanity cross-check when we have both
+    if (threshold_dollar is not None) and (threshold_pct is not None) and (initial is not None):
+        implied_pct = (threshold_dollar / initial) * 100.0
+        # If they disagree significantly, trust the % and recompute $
+        if abs(implied_pct - threshold_pct) > 2.0:
+            threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
+
+    return initial, threshold_dollar, threshold_pct
+
+
+def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]:
+    """Parse autocall level with context-aware search."""
+    candidates = []
+
+    # Look near autocall keywords
+    for m in re.finditer(r"(automatic(?:ally)?\s+call(?:ed)?|autocall)", text, flags=re.I):
+        start = max(0, m.start() - 250)
+        end = min(len(text), m.end() + 250)
+        candidates.append(text[start:end])
+
+    for m in re.finditer(r"(call\s+level|redemption\s+trigger)", text, flags=re.I):
+        start = max(0, m.start() - 250)
+        end = min(len(text), m.end() + 250)
+        candidates.append(text[start:end])
+
+    level = None
+    for s in candidates:
+        m_usd = MONEY_RE.search(s)
+        m_pct = PCT_RE.search(s)
+
+        if m_usd:
+            level = float(m_usd.group(1).replace(",", ""))
+            break
+        if m_pct and initial is not None:
+            level = initial * (float(m_pct.group(1)) / 100.0)
+            break
+
+    # Default: 100% of initial if mentioned
+    if level is None and initial is not None:
+        if re.search(r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s*share\s*price)", text, flags=re.I):
+            level = float(initial)
+
+    return level
+
+
+def extract_observation_dates_from_tables(html: str) -> List[dt.date]:
+    """Extract observation dates from HTML tables - much more accurate than regex."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+        dates: List[dt.date] = []
+
+        for tbl in soup.find_all("table"):
+            rows = []
+            for tr in tbl.find_all("tr"):
+                cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
+                if cells:
+                    rows.append(cells)
+
+            if not rows:
+                continue
+
+            header = rows[0]
+            idx = None
+
+            # Look for date columns
+            for j, h in enumerate(header):
+                if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date)", h, flags=re.I):
+                    idx = j
+                    break
+
+            if idx is None:
+                continue
+
+            # Extract dates from that column
+            for r in rows[1:]:
+                if idx < len(r):
+                    d = parse_date(r[idx])
+                    if d:
+                        dates.append(d)
+
+        return sorted(set(dates))
+    except Exception:
+        return []
+
+
+def parse_coupon_rate(text: str) -> Optional[float]:
+    """Parse coupon rate (per annum)."""
+    m_apr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum|p\.a\.|annual)", text, flags=re.I)
+    if m_apr:
+        return float(m_apr.group(1))
+    return None
+
+
+def parse_dates_comprehensive(raw_content: str, is_html: bool) -> Dict[str, Any]:
+    """Comprehensive date parsing with table extraction."""
+    dates = {}
+
+    # Try table extraction first (most accurate)
+    if is_html:
+        obs_dates = extract_observation_dates_from_tables(raw_content)
+        if obs_dates:
+            dates["observation_dates"] = [d.isoformat() for d in obs_dates]
+            dates["pricing_date"] = obs_dates[0].isoformat()
+            dates["maturity_date"] = obs_dates[-1].isoformat()
+
+    # Fallback to text parsing
+    text = html_to_text(raw_content) if is_html else raw_content
+
+    # Pricing date
+    if "pricing_date" not in dates:
+        m_pricing = re.search(r"pricing\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+        if m_pricing:
+            d = parse_date(m_pricing.group(1))
+            if d:
+                dates["pricing_date"] = d.isoformat()
+
+    # Trade date
+    m_trade = re.search(r"trade\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+    if m_trade:
+        d = parse_date(m_trade.group(1))
+        if d:
+            dates["trade_date"] = d.isoformat()
+
+    # Maturity date
+    if "maturity_date" not in dates:
+        m_maturity = re.search(r"maturity\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+        if m_maturity:
+            d = parse_date(m_maturity.group(1))
+            if d:
+                dates["maturity_date"] = d.isoformat()
+
+    # Settlement date
+    m_settlement = re.search(r"settlement\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
+    if m_settlement:
+        d = parse_date(m_settlement.group(1))
+        if d:
+            dates["settlement_date"] = d.isoformat()
+
+    return dates
+
+
+def detect_underlying_ticker(text: str) -> Optional[str]:
+    """Detect underlying ticker symbol."""
+    # Look for "Underlying:" or similar
+    patterns = [
+        r"underlying[^:\n]*:\s*([A-Z]{1,5})\b",
+        r"ticker[^:\n]*:\s*([A-Z]{1,5})\b",
+        r"symbol[^:\n]*:\s*([A-Z]{1,5})\b",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            return m.group(1).upper()
+
+    return None
+
+
+# ========== STREAMLIT UI FUNCTIONS ==========
+
+def display_header():
+    """Display application header."""
+    st.markdown('<div class="main-header">📊 Structured Products Analyzer (Enhanced)</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-header">Advanced parsing with table extraction and context-aware logic</div>',
+        unsafe_allow_html=True
+    )
+
+
+def display_sidebar():
+    """Display sidebar with options."""
+    st.sidebar.header("⚙️ Analysis Options")
+
+    st.sidebar.subheader("Parsing")
+    use_advanced_parsing = st.sidebar.checkbox(
+        "Use Advanced Parsing",
+        value=True,
+        help="Context-aware parsing with table extraction (recommended)"
+    )
+
+    st.sidebar.subheader("Analysis Type")
+    analysis_type = st.sidebar.radio(
+        "Select analysis type:",
+        ["General Extraction", "Autocallable Note Analysis"],
+        help="Autocallable analysis includes coupon scheduling and trigger detection"
+    )
+
+    st.sidebar.subheader("PDF Options")
+    if is_pdf_supported():
+        st.sidebar.success("✅ PDF support available")
+        max_pdf_pages = st.sidebar.number_input(
+            "Max PDF Pages",
+            min_value=1,
+            max_value=1000,
+            value=50
+        )
+    else:
+        st.sidebar.warning("⚠️ Install pdfplumber for PDF support")
+        max_pdf_pages = None
+
+    return {
+        "use_advanced_parsing": use_advanced_parsing,
+        "analysis_type": analysis_type,
+        "max_pdf_pages": max_pdf_pages
+    }
+
+
+def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]) -> Dict[str, Any]:
+    """Analyze filing with advanced parsing."""
+    result = {}
+
+    with st.spinner("🔍 Parsing with advanced logic..."):
+        # Convert to text for analysis
+        text = html_to_text(content) if is_html else content
+
+        # Parse initial and threshold
+        initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
+
+        # Parse autocall level
+        autocall_level = parse_autocall_level(text, initial)
+
+        # Parse dates
+        dates = parse_dates_comprehensive(content, is_html)
+
+        # Parse coupon rate
+        coupon_rate = parse_coupon_rate(text)
+
+        # Detect ticker
+        ticker = detect_underlying_ticker(text)
+
+        # Store results
+        result["initial_price"] = initial
+        result["threshold_dollar"] = threshold_dollar
+        result["threshold_pct"] = threshold_pct
+        result["autocall_level"] = autocall_level
+        result["coupon_rate_annual"] = coupon_rate
+        result["dates"] = dates
+        result["ticker"] = ticker
+
+        st.success("✅ Advanced parsing complete")
+
+    return result
+
+
+def display_parsing_results(result: Dict[str, Any]):
+    """Display parsed results with edit capability."""
+    st.header("📋 Parsed Information")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Pricing Parameters")
+
+        initial = st.number_input(
+            "Initial Share Price ($)",
+            value=float(result.get("initial_price") or 0),
+            format="%.4f",
+            help="Extracted initial price"
+        )
+
+        threshold_pct = st.number_input(
+            "Threshold Level (%)",
+            value=float(result.get("threshold_pct") or 0),
+            format="%.2f",
+            help="Threshold as % of initial"
+        )
+
+        threshold_dollar = st.number_input(
+            "Threshold Level ($)",
+            value=float(result.get("threshold_dollar") or 0),
+            format="%.4f",
+            help="Threshold in dollars"
+        )
+
+        autocall = st.number_input(
+            "Autocall Level ($)",
+            value=float(result.get("autocall_level") or initial or 0),
+            format="%.4f",
+            help="Autocall trigger level"
+        )
+
+    with col2:
+        st.subheader("Product Details")
+
+        coupon = st.number_input(
+            "Coupon Rate (% per annum)",
+            value=float(result.get("coupon_rate_annual") or 0),
+            format="%.2f",
+            help="Annual coupon rate"
+        )
+
+        ticker = st.text_input(
+            "Underlying Ticker",
+            value=result.get("ticker") or "TICKER",
+            help="Stock ticker symbol"
+        ).upper()
+
+        notional = st.number_input(
+            "Notional Amount ($)",
+            value=1000.0,
+            format="%.2f",
+            help="Investment amount"
+        )
+
+        # Default to quarterly payments
+        payments_per_year = 4
+
+    # Dates
+    st.subheader("Key Dates")
+    dates = result.get("dates", {})
+
+    if "observation_dates" in dates:
+        st.write(f"**Observation Dates:** {len(dates['observation_dates'])} dates detected")
+        with st.expander("View all observation dates"):
+            st.json(dates["observation_dates"])
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Pricing Date", dates.get("pricing_date", "N/A"))
+    col2.metric("Settlement Date", dates.get("settlement_date", "N/A"))
+    col3.metric("Maturity Date", dates.get("maturity_date", "N/A"))
+
+    # Return updated values
+    return {
+        "initial": initial,
+        "threshold_dollar": threshold_dollar,
+        "threshold_pct": threshold_pct,
+        "autocall_level": autocall,
+        "coupon_rate": coupon / 100.0,  # Convert to decimal
+        "ticker": ticker,
+        "notional": notional,
+        "payments_per_year": payments_per_year,
+        "dates": dates
+    }
+
+
+def main():
+    """Main application."""
+    display_header()
+
+    # Sidebar options
+    options = display_sidebar()
+
+    # File upload
+    st.header("📁 Upload Filing")
+
+    uploaded_file = st.file_uploader(
+        "Choose a filing file",
+        type=["html", "htm", "txt", "pdf"],
+        help="Upload an EDGAR filing"
+    )
+
+    if uploaded_file is not None:
+        # Read file
+        file_extension = Path(uploaded_file.name).suffix.lower()
+
+        try:
+            if file_extension == ".pdf":
+                if not is_pdf_supported():
+                    st.error("PDF support not available. Install: pip install pdfplumber")
+                    return
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_file.write(uploaded_file.read())
+                    tmp_path = tmp_file.name
+
+                content, is_html = read_filing_content(tmp_path, max_pdf_pages=options["max_pdf_pages"])
+                Path(tmp_path).unlink()
+            else:
+                # Try multiple encodings
+                raw_bytes = uploaded_file.read()
+                encodings_to_try = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+                content = None
+
+                for encoding in encodings_to_try:
+                    try:
+                        content = raw_bytes.decode(encoding)
+                        st.info(f"✅ File decoded using {encoding} encoding")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+
+                if content is None:
+                    content = raw_bytes.decode('utf-8', errors='replace')
+                    st.warning("⚠️ Some characters may be replaced")
+
+                is_html = file_extension in [".html", ".htm"] or content.strip().startswith("<")
+
+            st.success(f"✅ Loaded {uploaded_file.name} ({len(content):,} characters)")
+
+            # Analyze with advanced parsing
+            if st.button("🚀 Analyze Filing", type="primary", use_container_width=True):
+                result = analyze_filing_advanced(content, is_html, options)
+
+                # Store in session state
+                st.session_state["parsed_result"] = result
+                st.session_state["content"] = content
+                st.session_state["is_html"] = is_html
+
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+            return
+
+    # Display results if available
+    if "parsed_result" in st.session_state:
+        st.markdown("---")
+
+        # Display and allow editing
+        confirmed_params = display_parsing_results(st.session_state["parsed_result"])
+
+        # Store confirmed params
+        st.session_state["confirmed_params"] = confirmed_params
+
+        st.markdown("---")
+
+        # Analysis buttons
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("💾 Download Parsed Data", use_container_width=True):
+                json_str = json.dumps(confirmed_params, indent=2)
+                st.download_button(
+                    label="📥 Download JSON",
+                    data=json_str,
+                    file_name="parsed_data.json",
+                    mime="application/json"
+                )
+
+        with col2:
+            if st.button("📊 Run Full Analysis", use_container_width=True, type="primary"):
+                st.info("Full analysis with price fetching coming soon...")
+                # TODO: Implement full analysis with yfinance
+
+
+if __name__ == "__main__":
+    main()

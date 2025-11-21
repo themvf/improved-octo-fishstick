@@ -1,0 +1,28 @@
+STRUCTURED NOTE OFFERING
+
+Product: Buffered Return Enhanced Note
+
+Underlying Indices:
+- S&P 500 Index (SPX)
+- Russell 2000 Index (RUT)
+
+Key Dates:
+Pricing Date: January 15, 2024
+Trade Date: January 18, 2024
+Initial Valuation Date: January 15, 2024
+Final Valuation Date: January 15, 2027
+Maturity Date: January 20, 2027
+Settlement Date: January 22, 2027
+
+Product Terms:
+- 3-year term
+- 100% principal protection with 10% buffer
+- Participation rate: 150% up to cap
+- Maximum return: 25%
+
+Additional Information:
+The notes are linked to the performance of the S&P 500 Index.
+Initial level will be determined on the pricing date based on the closing
+value of the S&P 500 Index (^GSPC).
+
+For more information about the Russell 2000, please refer to the prospectus.
