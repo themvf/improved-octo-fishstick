@@ -1213,10 +1213,23 @@ def display_parsing_results(result: Dict[str, Any]):
     if "observation_dates" in dates:
         st.info(f"ℹ️ Detected {len(dates['observation_dates'])} observation dates from filing. You can edit, add, or remove dates below.")
 
+    # Check if any date should be removed (button clicks set this)
+    remove_idx = None
+    for idx in range(len(st.session_state["edited_observation_dates"])):
+        if st.session_state.get(f"remove_flag_{idx}", False):
+            remove_idx = idx
+            st.session_state[f"remove_flag_{idx}"] = False  # Reset flag
+            break
+
+    # If a removal was requested, remove it and rerun
+    if remove_idx is not None:
+        st.session_state["edited_observation_dates"].pop(remove_idx)
+        st.rerun()
+
     # Display each date as an editable line item with text input
     edited_dates = []
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
-        col1, col2, col3 = st.columns([3, 1, 0.5])
+        col1, col2 = st.columns([4, 0.5])
 
         # Text input for easy date entry (format: MM-DD-YYYY)
         with col1:
@@ -1227,29 +1240,16 @@ def display_parsing_results(result: Dict[str, Any]):
                 help="Format: MM-DD-YYYY or YYYY-MM-DD or MM/DD/YYYY"
             )
 
-        # Calendar picker as alternative
-        with col2:
-            cal_date = st.date_input(
-                "📅",
-                value=obs_date,
-                key=f"obs_date_cal_{idx}",
-                label_visibility="collapsed"
-            )
-
         # Remove button
-        with col3:
+        with col2:
             if st.button("🗑️", key=f"remove_{idx}", help="Remove this date"):
-                st.session_state["edited_observation_dates"].pop(idx)
+                # Set flag to remove this specific index
+                st.session_state[f"remove_flag_{idx}"] = True
                 st.rerun()
 
-        # Determine which date to use (calendar takes priority if changed)
+        # Parse text input
         final_date = obs_date  # Default to original
-
-        # Check if calendar was changed
-        if cal_date != obs_date:
-            final_date = cal_date
-        # Otherwise, try to parse text input
-        elif date_str != obs_date.strftime("%m-%d-%Y"):
+        if date_str != obs_date.strftime("%m-%d-%Y"):
             try:
                 parsed_date = parse_date(date_str)
                 if parsed_date:
