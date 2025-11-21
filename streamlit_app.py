@@ -532,11 +532,13 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         continue
 
                     # Check against issuer-specific patterns
+                    # Strip asterisks and other special characters from header for matching
+                    h_clean = h.replace('*', '').strip()
                     for pattern in issuer_patterns:
-                        if re.search(pattern, h, flags=re.I):
+                        if re.search(pattern, h_clean, flags=re.I):
                             date_col_idx = j
                             matched_header = h
-                            debug_info.append(f"Table {tbl_idx + 1}: Matched {issuer} pattern '{pattern}' in column '{h}'")
+                            debug_info.append(f"Table {tbl_idx + 1}: Matched {issuer} pattern '{pattern}' in column '{h}' (cleaned: '{h_clean}')")
                             break
                     if date_col_idx is not None:
                         break
@@ -550,11 +552,14 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         continue
 
                     # Match observation/determination date columns
+                    # Strip asterisks and other special characters from header for matching
+                    h_clean = h.replace('*', '').strip()
                     if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
                                r"determination\s+date|pricing\s+date|observation\s+period|"
-                               r"autocall\s+observation|autocall\s+valuation|review\s+date)", h, flags=re.I):
+                               r"autocall\s+observation|autocall\s+valuation|review\s+date)", h_clean, flags=re.I):
                         date_col_idx = j
                         matched_header = h
+                        debug_info.append(f"Table {tbl_idx + 1}: Matched observation date column '{h}' (cleaned: '{h_clean}')")
                         break
 
             # Third pass: Any column with "date"
@@ -873,6 +878,10 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
         d = parse_date(m_trade.group(1))
         if d:
             dates["trade_date"] = d.isoformat()
+            # For UBS and other issuers, if no pricing_date found, use trade_date as pricing_date
+            if "pricing_date" not in dates and issuer in ["UBS", "Credit Suisse", "Barclays"]:
+                dates["pricing_date"] = d.isoformat()
+                debug_info.append(f"Using Trade Date as Pricing Date for {issuer}")
 
     # Maturity date
     if "maturity_date" not in dates:
