@@ -1102,6 +1102,14 @@ def display_parsing_results(result: Dict[str, Any]):
             for info in dates["extraction_debug"]:
                 st.text(info)
 
+    # Product Type Selector
+    st.subheader("🧩 Product Type")
+    product_type = st.radio(
+        "Select the autocallable structure:",
+        ["Single Stock", "Worst-Of (2 Assets)"],
+        help="Choose 'Worst-Of' if the note is linked to 2 stocks where the worst performer determines the payout"
+    )
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -1150,11 +1158,42 @@ def display_parsing_results(result: Dict[str, Any]):
     with col2:
         st.subheader("Product Details")
 
-        ticker = st.text_input(
-            "Underlying Ticker",
-            value=result.get("ticker") or "TICKER",
-            help="Stock ticker symbol"
-        ).upper()
+        if product_type == "Single Stock":
+            ticker = st.text_input(
+                "Underlying Ticker",
+                value=result.get("ticker") or "TICKER",
+                help="Stock ticker symbol"
+            ).upper()
+            ticker_b = None
+            initial_b = None
+        else:  # Worst-Of (2 Assets)
+            col_a, col_b = st.columns(2)
+            with col_a:
+                ticker = st.text_input(
+                    "Stock A Ticker",
+                    value=result.get("ticker") or "TICKER",
+                    help="First stock ticker symbol"
+                ).upper()
+            with col_b:
+                ticker_b = st.text_input(
+                    "Stock B Ticker",
+                    value="TICKER",
+                    help="Second stock ticker symbol"
+                ).upper()
+
+            # Initial prices for both stocks (worst-of needs both)
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.caption(f"**Stock A ({ticker}) Initial Price:**")
+                # Use the parsed initial price for Stock A
+            with col_b:
+                initial_b = st.number_input(
+                    f"Stock B ({ticker_b}) Initial ($)",
+                    value=100.0,
+                    format="%.4f",
+                    help="Initial price for Stock B",
+                    key="initial_b"
+                )
 
         # Use detected notional if available, otherwise default to 1000.0
         detected_notional = result.get("notional") or 1000.0
@@ -1284,6 +1323,7 @@ def display_parsing_results(result: Dict[str, Any]):
 
     # Return updated values
     return {
+        "product_type": product_type,
         "initial": initial,
         "threshold_dollar": threshold_dollar,
         "threshold_pct": threshold_pct,
@@ -1291,6 +1331,8 @@ def display_parsing_results(result: Dict[str, Any]):
         "coupon_rate": coupon_rate_decimal,  # Already in decimal form
         "contingent_payment_pct": contingent_payment_pct,
         "ticker": ticker,
+        "ticker_b": ticker_b,
+        "initial_b": initial_b,
         "notional": notional,
         "payments_per_year": payments_per_year,
         "dates": dates
@@ -1401,7 +1443,10 @@ def main():
 
         with col2:
             if st.button("📊 Run Full Analysis", use_container_width=True, type="primary"):
-                run_full_analysis(confirmed_params)
+                if confirmed_params.get("product_type") == "Worst-Of (2 Assets)":
+                    run_worst_of_analysis(confirmed_params)
+                else:
+                    run_full_analysis(confirmed_params)
 
 
 def run_full_analysis(params: Dict[str, Any]):
@@ -1736,6 +1781,335 @@ def run_full_analysis(params: Dict[str, Any]):
 
         except Exception as e:
             st.error(f"❌ Error fetching prices: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+def run_worst_of_analysis(params: Dict[str, Any]):
+    """Run worst-of autocallable analysis for 2 assets."""
+    import yfinance as yf
+
+    ticker_a = params.get("ticker")
+    ticker_b = params.get("ticker_b")
+    initial_a = params.get("initial")
+    initial_b = params.get("initial_b")
+    dates_dict = params.get("dates", {})
+    observation_dates = dates_dict.get("observation_dates", [])
+
+    # Validation
+    if not ticker_a or ticker_a == "TICKER":
+        st.error("❌ Please specify a valid ticker for Stock A")
+        return
+    if not ticker_b or ticker_b == "TICKER":
+        st.error("❌ Please specify a valid ticker for Stock B")
+        return
+    if not initial_a or initial_a <= 0:
+        st.error("❌ Please specify a valid initial price for Stock A")
+        return
+    if not initial_b or initial_b <= 0:
+        st.error("❌ Please specify a valid initial price for Stock B")
+        return
+
+    if not observation_dates:
+        st.warning("⚠️ No observation dates found. Using key dates instead...")
+        date_keys = ["pricing_date", "trade_date", "settlement_date", "maturity_date"]
+        observation_dates = [dates_dict[k] for k in date_keys if k in dates_dict and dates_dict[k]]
+
+    if not observation_dates:
+        st.error("❌ No dates available for analysis")
+        return
+
+    # Convert to date objects
+    date_objects = [dt.datetime.fromisoformat(d).date() for d in observation_dates]
+    date_objects.sort()
+
+    st.header("💰 Worst-Of Autocallable Analysis (2 Assets)")
+
+    # Explain worst-of structure
+    with st.expander("🧩 What is a Worst-Of Autocallable? (Click to expand)"):
+        st.markdown("""
+        ### How Worst-Of Autocallables Work
+
+        A **worst-of autocallable** linked to two stocks pays coupons and determines outcomes based on the **worst performer**:
+
+        #### 🟢 During the Life (Monthly/Quarterly Checks)
+
+        **Coupon Payment:**
+        - You receive the coupon **only if BOTH stocks are at or above the coupon barrier**
+        - If either stock drops below the barrier, no coupon that period
+
+        **Autocall (Early Redemption):**
+        - The note autocalls **only if BOTH stocks are at or above the autocall level**
+        - If autocalled, you get your principal back plus the coupon for that period
+
+        #### 🔴 At Maturity (If Not Autocalled)
+
+        The **worst performer** (the stock with the lowest % of initial) controls your final payout:
+
+        - **If worst performer ≥ final barrier:** You get 100% of principal back
+        - **If worst performer < final barrier:** You lose money proportional to the worst stock's decline
+
+        **Example:**
+        - Stock A: +5% (105% of initial)
+        - Stock B: -40% (60% of initial) ← **Worst performer**
+        - Final barrier: 70% of initial
+        - **Result:** You lose 40% of your principal, even though Stock A performed well
+
+        #### 💡 Why "Worst-Of"?
+
+        You're taking on **double the risk** because both stocks must perform well for you to:
+        - Receive coupons
+        - Get autocalled early
+        - Avoid losses at maturity
+
+        In exchange, these notes typically offer **higher coupon rates** than single-stock autocallables.
+        """)
+
+    with st.spinner(f"Fetching prices for {ticker_a} and {ticker_b}..."):
+        try:
+            # Fetch prices for both stocks
+            start_date = date_objects[0] - dt.timedelta(days=14)
+            end_date = date_objects[-1] + dt.timedelta(days=2)
+
+            # Fetch Stock A
+            df_a = yf.download(
+                ticker_a,
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
+                progress=False,
+                auto_adjust=False
+            )
+
+            # Fetch Stock B
+            df_b = yf.download(
+                ticker_b,
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
+                progress=False,
+                auto_adjust=False
+            )
+
+            if df_a.empty or df_b.empty:
+                st.error(f"❌ Could not fetch price data for one or both tickers")
+                return
+
+            st.success(f"✅ Fetched {len(df_a)} price records for {ticker_a} and {len(df_b)} for {ticker_b}")
+
+            # Build observation table
+            obs_data = []
+            for obs_date in date_objects:
+                # Find close on or before obs_date for Stock A
+                prices_a_before = df_a[df_a.index.date <= obs_date]
+                prices_b_before = df_b[df_b.index.date <= obs_date]
+
+                if not prices_a_before.empty and not prices_b_before.empty:
+                    price_a = float(prices_a_before['Close'].iloc[-1])
+                    price_b = float(prices_b_before['Close'].iloc[-1])
+                    actual_date = prices_a_before.index[-1].date()
+
+                    # Calculate % of initial
+                    pct_a = (price_a / initial_a) * 100
+                    pct_b = (price_b / initial_b) * 100
+
+                    # Worst performer
+                    worst_pct = min(pct_a, pct_b)
+                    worst_ticker = ticker_a if pct_a < pct_b else ticker_b
+
+                    row = {
+                        "Observation Date": obs_date.strftime("%m-%d-%Y"),
+                        "Actual Date": actual_date.strftime("%m-%d-%Y"),
+                        f"{ticker_a} Price": price_a,
+                        f"{ticker_a} % of Initial": f"{pct_a:.2f}%",
+                        f"{ticker_b} Price": price_b,
+                        f"{ticker_b} % of Initial": f"{pct_b:.2f}%",
+                        "Worst Performer": worst_ticker,
+                        "Worst %": f"{worst_pct:.2f}%",
+                    }
+
+                    # Check barriers
+                    threshold_pct = params.get("threshold_pct", 70)
+                    autocall_pct = (params.get("autocall_level", initial_a) / initial_a) * 100
+
+                    # Coupon: BOTH must be above threshold
+                    both_above_threshold = (pct_a >= threshold_pct) and (pct_b >= threshold_pct)
+                    row["Both Above Coupon Barrier"] = both_above_threshold
+
+                    # Autocall: BOTH must be above autocall level
+                    both_above_autocall = (pct_a >= autocall_pct) and (pct_b >= autocall_pct)
+                    row["Both Above Autocall"] = both_above_autocall
+
+                    obs_data.append(row)
+
+            if not obs_data:
+                st.error("❌ Could not match prices to observation dates")
+                return
+
+            df_obs = pd.DataFrame(obs_data)
+
+            # Display table
+            st.subheader("📊 Worst-Of Observation Schedule")
+            st.dataframe(df_obs, use_container_width=True)
+
+            # Autocall analysis
+            st.subheader("🔔 Autocall Analysis")
+
+            autocalled = False
+            call_date = None
+
+            for idx, row in df_obs.iterrows():
+                if idx > 0 and row.get("Both Above Autocall"):
+                    autocalled = True
+                    call_date = row["Observation Date"]
+                    break
+
+            threshold_pct = params.get("threshold_pct", 70)
+            coupon_rate = params.get("coupon_rate", 0)
+            notional = params.get("notional", 1000)
+            payments_per_year = params.get("payments_per_year", 4)
+
+            if autocalled:
+                st.success(f"✅ **AUTOCALLED** on {call_date}")
+                st.write("Both stocks were above the autocall level. Product called early.")
+                st.write("Investor receives: Principal + accrued coupons")
+            else:
+                st.info("ℹ️ **Not Autocalled** - Product runs to maturity")
+
+                final_row = obs_data[-1]
+                final_worst_pct = float(final_row["Worst %"].rstrip('%'))
+                worst_ticker = final_row["Worst Performer"]
+
+                st.write(f"**Worst Performer at Maturity:** {worst_ticker} at {final_worst_pct:.2f}% of initial")
+
+                if final_worst_pct >= threshold_pct:
+                    st.success(f"✅ Worst performer ({final_worst_pct:.2f}%) ≥ Final Barrier ({threshold_pct:.2f}%)")
+                    st.write("**Outcome:** Investor receives 100% of principal plus all coupons earned")
+                else:
+                    st.error(f"❌ Worst performer ({final_worst_pct:.2f}%) < Final Barrier ({threshold_pct:.2f}%)")
+
+                    # Calculate loss based on worst performer
+                    loss_pct = final_worst_pct - 100  # Negative number
+
+                    st.subheader("⚠️ Principal Loss (Based on Worst Performer)")
+                    principal_loss_dollars = notional * (loss_pct / 100)
+                    principal_returned = notional + principal_loss_dollars
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric(
+                        "Worst Performer Return",
+                        f"{loss_pct:.2f}%",
+                        delta=f"{loss_pct:.2f}%",
+                        delta_color="inverse"
+                    )
+                    col2.metric(
+                        "Principal Loss $",
+                        f"${abs(principal_loss_dollars):.2f}",
+                        delta=f"-${abs(principal_loss_dollars):.2f}",
+                        delta_color="inverse"
+                    )
+                    col3.metric(
+                        "Principal Returned",
+                        f"${principal_returned:.2f}",
+                        delta=f"${principal_loss_dollars:.2f}",
+                        delta_color="inverse"
+                    )
+
+            # Coupon summary
+            st.subheader("💵 Contingent Payment Summary")
+
+            if coupon_rate > 0:
+                coupon_per_period = notional * coupon_rate
+
+                eligible_periods = 0
+                for idx, row in df_obs.iterrows():
+                    if autocalled and idx > df_obs[df_obs["Observation Date"] == call_date].index[0]:
+                        break
+                    if row.get("Both Above Coupon Barrier"):
+                        eligible_periods += 1
+
+                total_coupons = eligible_periods * coupon_per_period
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Contingent Payment per Period", f"${coupon_per_period:.2f}")
+                col2.metric("Eligible Periods (Both Above Barrier)", eligible_periods)
+                col3.metric("Total Payments", f"${total_coupons:.2f}")
+
+                # Total return
+                st.subheader("📊 Total Return (Principal + Contingent Payments)")
+
+                if autocalled:
+                    principal_return = notional
+                    total_return = principal_return + total_coupons
+                    return_pct = ((total_return - notional) / notional) * 100
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Principal Returned", f"${principal_return:.2f}")
+                    col2.metric("Total Return", f"${total_return:.2f}")
+                    col3.metric("Return %", f"{return_pct:.2f}%")
+                else:
+                    final_worst_pct = float(obs_data[-1]["Worst %"].rstrip('%'))
+
+                    if final_worst_pct >= threshold_pct:
+                        principal_return = notional
+                    else:
+                        # Loss based on worst performer
+                        loss_pct = final_worst_pct - 100
+                        principal_return = notional * (1 + loss_pct / 100)
+
+                    total_return = principal_return + total_coupons
+                    return_pct = ((total_return - notional) / notional) * 100
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Principal Returned", f"${principal_return:.2f}",
+                              delta=f"{principal_return - notional:.2f}" if principal_return != notional else None,
+                              delta_color="inverse" if principal_return < notional else "normal")
+                    col2.metric("Total Return", f"${total_return:.2f}")
+                    col3.metric("Return %", f"{return_pct:.2f}%",
+                              delta_color="inverse" if return_pct < 0 else "normal")
+
+                    # Add explanation if there's downside
+                    if principal_return < notional:
+                        payment_offset = total_coupons
+                        st.info(
+                            f"💡 **Explanation:** The worst performer ({worst_ticker}) declined {abs(loss_pct):.2f}%, "
+                            f"causing a principal loss of ${abs(principal_return - notional):.2f}. "
+                            f"The contingent payments (${total_coupons:.2f}) partially offset this loss. "
+                            f"Net return: {return_pct:.2f}%"
+                        )
+
+            # Download results
+            st.subheader("💾 Download Results")
+
+            results_dict = {
+                "product_type": "worst_of_2_assets",
+                "ticker_a": ticker_a,
+                "ticker_b": ticker_b,
+                "initial_a": initial_a,
+                "initial_b": initial_b,
+                "parameters": params,
+                "observation_schedule": df_obs.to_dict(orient="records"),
+                "autocalled": autocalled,
+                "call_date": call_date,
+                "summary": {
+                    "worst_performer": worst_ticker if not autocalled else None,
+                    "worst_pct": final_worst_pct if not autocalled else None,
+                    "eligible_coupon_periods": eligible_periods if coupon_rate > 0 else None,
+                    "total_coupons": float(total_coupons) if coupon_rate > 0 else None,
+                    "principal_return": float(principal_return) if coupon_rate > 0 else None,
+                    "total_return": float(total_return) if coupon_rate > 0 else None,
+                    "return_pct": float(return_pct) if coupon_rate > 0 else None
+                }
+            }
+
+            json_str = json.dumps(results_dict, indent=2, default=str)
+            st.download_button(
+                label="📥 Download Worst-Of Analysis",
+                data=json_str,
+                file_name=f"worst_of_{ticker_a}_{ticker_b}_analysis_{dt.datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
+
+        except Exception as e:
+            st.error(f"❌ Error during worst-of analysis: {e}")
             import traceback
             st.code(traceback.format_exc())
 
