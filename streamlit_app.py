@@ -134,6 +134,7 @@ ISSUER_CONFIGS = {
             r"each\s+security\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "date_column_patterns": [
+            "autocall observation",
             "review date",
             "observation date",
         ],
@@ -570,7 +571,8 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                     h_clean = h.replace('*', '').strip()
                     if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
                                r"determination\s+date|pricing\s+date|observation\s+period|"
-                               r"autocall\s+observation|autocall\s+valuation|review\s+date)", h_clean, flags=re.I):
+                               r"autocall\s+observation|autocall\s+valuation|review\s+date|"
+                               r"monitoring\s+date|fixing\s+date)", h_clean, flags=re.I):
                         date_col_idx = j
                         matched_header = h
                         debug_info.append(f"Table {tbl_idx + 1}: Matched observation date column '{h}' (cleaned: '{h_clean}')")
