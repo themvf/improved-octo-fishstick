@@ -536,6 +536,23 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         found_dates_in_row.append(d)
 
                 if found_dates_in_row:
+                    # Apply validation
+                    min_date = min(found_dates_in_row)
+                    max_date = max(found_dates_in_row)
+                    today = dt.date.today()
+                    current_year = today.year
+
+                    # Reject if dates are absurdly old (>20 years) - clearly not observation dates
+                    if min_date < today.replace(year=today.year - 20):
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too old (earliest: {min_date.isoformat()})")
+                        continue
+
+                    # Reject if dates are too far in the future (likely hypothetical/examples)
+                    if max_date.year > current_year + 10:
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too far in future (year {max_date.year})")
+                        continue
+
+                    # Valid single-row table with dates
                     debug_info.append(f"Table {tbl_idx + 1}: Single-row table with dates: {[d.strftime('%m-%d-%Y') for d in found_dates_in_row]}")
                     dates.extend(found_dates_in_row)
                     continue  # Skip normal processing for this table
@@ -625,20 +642,25 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         found_in_table += 1
 
             # Validate dates before accepting this table
-            # Reject tables with dates too far in the future (likely hypothetical)
-            # or too far in the past (likely historical price data)
             if table_dates:
                 min_date = min(table_dates)
                 max_date = max(table_dates)
                 today = dt.date.today()
                 current_year = today.year
+                date_span_years = (max_date - min_date).days / 365.25
 
-                # Reject if earliest date is more than 2 years in the past (likely historical data)
-                if min_date < today.replace(year=today.year - 2):
-                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in past (earliest: {min_date.isoformat()}, likely historical data)")
+                # Reject if dates are absurdly old (>20 years) - clearly not observation dates
+                if min_date < today.replace(year=today.year - 20):
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - dates too old (earliest: {min_date.isoformat()})")
                     continue
 
-                # Allow up to 10 years in the future for long-term notes
+                # Reject if dates span >4 years with many dates (likely historical price table)
+                # Observation dates typically span 1-3 years with 4-12 dates
+                if date_span_years > 4 and len(table_dates) > 15:
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be historical table (span: {date_span_years:.1f} years, {len(table_dates)} dates)")
+                    continue
+
+                # Reject if dates are too far in the future (likely hypothetical/examples)
                 if max_date.year > current_year + 10:
                     debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in future (year {max_date.year})")
                     continue
