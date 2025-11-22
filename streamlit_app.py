@@ -1302,7 +1302,16 @@ def format_date_us(date_str: str) -> str:
 
 def display_parsing_results(result: Dict[str, Any]):
     """Display parsed results with edit capability."""
-    st.header("📋 Parsed Information")
+    # Header with Clear button
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        st.header("📋 Parsed Information")
+    with col2:
+        st.write("")  # Spacing
+        if st.button("🗑️ Clear All", help="Clear all parsed data and start over"):
+            # Clear all session state
+            st.session_state.clear()
+            st.rerun()
 
     # Display extraction debug info at the top, separated from data inputs
     dates = result.get("dates", {})
