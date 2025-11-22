@@ -134,6 +134,7 @@ ISSUER_CONFIGS = {
             r"each\s+security\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "date_column_patterns": [
+            "autocall observation",
             "review date",
             "observation date",
         ],
@@ -523,6 +524,20 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             date_col_idx = None
             matched_header = None
 
+            # Special case: Single-row tables where the row itself contains dates
+            # Check if the "header" row contains parseable dates
+            if len(rows) == 1:
+                found_dates_in_row = []
+                for cell in header:
+                    d = parse_date(cell)
+                    if d:
+                        found_dates_in_row.append(d)
+
+                if found_dates_in_row:
+                    debug_info.append(f"Table {tbl_idx + 1}: Single-row table with dates: {[d.strftime('%m-%d-%Y') for d in found_dates_in_row]}")
+                    dates.extend(found_dates_in_row)
+                    continue  # Skip normal processing for this table
+
             # First pass: Try issuer-specific patterns if available
             if issuer_patterns:
                 for j, h in enumerate(header):
@@ -556,7 +571,8 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                     h_clean = h.replace('*', '').strip()
                     if re.search(r"(coupon\s+determination\s+date|observation\s+date|valuation\s+date|"
                                r"determination\s+date|pricing\s+date|observation\s+period|"
-                               r"autocall\s+observation|autocall\s+valuation|review\s+date)", h_clean, flags=re.I):
+                               r"autocall\s+observation|autocall\s+valuation|review\s+date|"
+                               r"monitoring\s+date|fixing\s+date)", h_clean, flags=re.I):
                         date_col_idx = j
                         matched_header = h
                         debug_info.append(f"Table {tbl_idx + 1}: Matched observation date column '{h}' (cleaned: '{h_clean}')")
@@ -905,19 +921,145 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
     return dates
 
 
-def detect_underlying_ticker(text: str) -> Optional[str]:
-    """Detect underlying ticker symbol."""
-    # Look for "Underlying:" or similar
+def detect_underlying_ticker(text: str, html: Optional[str] = None) -> Optional[str]:
+    """
+    Detect underlying ticker symbol using multiple strategies.
+
+    Args:
+        text: Plain text content
+        html: Optional HTML content for table extraction
+
+    Returns:
+        Ticker symbol or None
+    """
+    # Common ETF and fund name to ticker mappings
+    ETF_MAPPING = {
+        # SPDR ETFs
+        "SPDR S&P 500": "SPY",
+        "SPDR S&P OIL & GAS EXPLORATION & PRODUCTION": "XOP",
+        "SPDR S&P OIL & GAS EXPLORATION": "XOP",
+        "SPDR GOLD": "GLD",
+        "SPDR GOLD SHARES": "GLD",
+        "SPDR S&P BIOTECH": "XBI",
+        "SPDR S&P RETAIL": "XRT",
+        "SPDR S&P REGIONAL BANKING": "KRE",
+        "SPDR S&P HOMEBUILDERS": "XHB",
+        # iShares ETFs
+        "ISHARES RUSSELL 2000": "IWM",
+        "ISHARES MSCI EMERGING MARKETS": "EEM",
+        "ISHARES MSCI EAFE": "EFA",
+        "ISHARES 20+ YEAR TREASURY": "TLT",
+        "ISHARES CORE S&P 500": "IVV",
+        "ISHARES BIOTECHNOLOGY": "IBB",
+        # Invesco ETFs
+        "INVESCO QQQ": "QQQ",
+        "POWERSHARES QQQ": "QQQ",
+        "INVESCO S&P 500": "SPY",
+        # Vanguard ETFs
+        "VANGUARD S&P 500": "VOO",
+        "VANGUARD TOTAL STOCK MARKET": "VTI",
+        "VANGUARD FTSE EMERGING MARKETS": "VWO",
+        # Sector ETFs
+        "ENERGY SELECT SECTOR SPDR": "XLE",
+        "FINANCIAL SELECT SECTOR SPDR": "XLF",
+        "TECHNOLOGY SELECT SECTOR SPDR": "XLK",
+        "HEALTH CARE SELECT SECTOR SPDR": "XLV",
+        "CONSUMER DISCRETIONARY SELECT SECTOR": "XLY",
+        "CONSUMER STAPLES SELECT SECTOR": "XLP",
+        "INDUSTRIAL SELECT SECTOR": "XLI",
+        "UTILITIES SELECT SECTOR": "XLU",
+        "MATERIALS SELECT SECTOR": "XLB",
+        "REAL ESTATE SELECT SECTOR": "XLRE",
+        "COMMUNICATION SERVICES SELECT SECTOR": "XLC",
+        # Leveraged/Inverse ETFs (common in structured products)
+        "PROSHARES ULTRA S&P500": "SSO",
+        "PROSHARES ULTRASHORT S&P500": "SDS",
+        "DIREXION DAILY SEMICONDUCTOR": "SOXL",
+        # ARK ETFs
+        "ARK INNOVATION": "ARKK",
+        "ARK GENOMIC REVOLUTION": "ARKG",
+        "ARK FINTECH INNOVATION": "ARKF",
+    }
+
+    # Strategy 1: Check ETF/fund name mappings
+    text_upper = text.upper()
+    for fund_name, ticker in ETF_MAPPING.items():
+        if fund_name in text_upper:
+            return ticker
+
+    # Strategy 2: Look for explicit "Underlying: TICKER" patterns
     patterns = [
         r"underlying[^:\n]*:\s*([A-Z]{1,5})\b",
         r"ticker[^:\n]*:\s*([A-Z]{1,5})\b",
         r"symbol[^:\n]*:\s*([A-Z]{1,5})\b",
+        r"(?:common\s+)?stock\s+of\s+([A-Z]{1,5})\b",
+        r"\(ticker:\s*([A-Z]{1,5})\)",
+        r"\(symbol:\s*([A-Z]{1,5})\)",
     ]
 
     for pattern in patterns:
         m = re.search(pattern, text, flags=re.I)
         if m:
-            return m.group(1).upper()
+            ticker = m.group(1).upper()
+            # Filter out common false positives
+            if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "DATE", "PRICE", "LEVEL", "VALUE", "FROM", "WILL"]:
+                return ticker
+
+    # Strategy 3: Extract from tables (if HTML provided)
+    if html:
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
+
+            for tbl in soup.find_all("table"):
+                rows = []
+                for tr in tbl.find_all("tr"):
+                    cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
+                    if cells:
+                        rows.append(cells)
+
+                if not rows:
+                    continue
+
+                # Look for ticker/symbol column
+                header = rows[0]
+                ticker_col_idx = None
+
+                for j, h in enumerate(header):
+                    if re.search(r"(ticker|symbol|underlying)", h, flags=re.I):
+                        ticker_col_idx = j
+                        break
+
+                if ticker_col_idx is not None and len(rows) > 1:
+                    # Extract from first data row
+                    if ticker_col_idx < len(rows[1]):
+                        ticker_candidate = rows[1][ticker_col_idx].strip()
+                        # Check if it looks like a ticker (1-5 uppercase letters)
+                        if re.match(r'^[A-Z]{1,5}$', ticker_candidate):
+                            return ticker_candidate
+        except:
+            pass  # Fall through to next strategy
+
+    # Strategy 4: Look for common stock patterns like "shares of AAPL" or "Apple Inc. (AAPL)"
+    m = re.search(r'\(([A-Z]{1,5})\)', text)
+    if m:
+        ticker = m.group(1).upper()
+        if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "NYSE", "NASDAQ"]:
+            return ticker
+
+    # Strategy 5: Use structured_products library as fallback
+    try:
+        from structured_products.parser import extract_symbols
+        symbols = extract_symbols(text, is_html=False)
+
+        # Prefer raw_tickers that aren't indices (no ^ prefix)
+        for ticker in symbols.get("raw_tickers", []):
+            if not ticker.startswith("^") and len(ticker) <= 5:
+                # Filter out common false positives
+                if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "DATE", "PRICE", "LEVEL", "VALUE", "FROM", "WILL", "USD", "HTML"]:
+                    return ticker
+    except:
+        pass
 
     return None
 
@@ -1094,7 +1236,7 @@ def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any]
 
         # Parse coupon rate and ticker (same for all)
         coupon_rate = parse_coupon_rate(text) if not coupon_rate_pct else coupon_rate_pct
-        ticker = detect_underlying_ticker(text)
+        ticker = detect_underlying_ticker(text, html=content if is_html else None)
 
         # Store results
         result["initial_price"] = initial
