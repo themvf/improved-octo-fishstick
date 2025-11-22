@@ -1470,22 +1470,29 @@ def display_parsing_results(result: Dict[str, Any]):
             st.session_state[f"remove_flag_{idx}"] = False  # Reset flag
             break
 
-    # If a removal was requested, remove it and rerun
+    # If a removal was requested, remove it, clear all text input states, and rerun
     if remove_idx is not None:
         st.session_state["edited_observation_dates"].pop(remove_idx)
+        # Clear all text input widget states to force fresh render
+        keys_to_clear = [k for k in st.session_state.keys() if k.startswith("obs_date_text_") or k.startswith("remove_")]
+        for k in keys_to_clear:
+            del st.session_state[k]
         st.rerun()
 
     # Display each date as an editable line item with text input
-    edited_dates = []
+    # Use a unique key that includes the date value to prevent key reuse issues
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
         col1, col2 = st.columns([4, 0.5])
+
+        # Create unique key based on index and date value hash
+        date_key = f"obs_date_{idx}_{hash(obs_date)}"
 
         # Text input for easy date entry (format: MM-DD-YYYY)
         with col1:
             date_str = st.text_input(
                 f"Observation Date #{idx + 1}",
                 value=obs_date.strftime("%m-%d-%Y"),
-                key=f"obs_date_text_{idx}",
+                key=date_key,
                 help="Format: MM-DD-YYYY or YYYY-MM-DD or MM/DD/YYYY"
             )
 
@@ -1496,22 +1503,16 @@ def display_parsing_results(result: Dict[str, Any]):
                 st.session_state[f"remove_flag_{idx}"] = True
                 st.rerun()
 
-        # Parse text input
-        final_date = obs_date  # Default to original
+        # Parse text input and update in place
         if date_str != obs_date.strftime("%m-%d-%Y"):
             try:
                 parsed_date = parse_date(date_str)
                 if parsed_date:
-                    final_date = parsed_date
+                    st.session_state["edited_observation_dates"][idx] = parsed_date
                 else:
                     st.error(f"Could not parse date: {date_str}")
             except Exception as e:
                 st.error(f"Invalid date format: {date_str}")
-
-        edited_dates.append(final_date)
-
-    # Update session state with edited dates
-    st.session_state["edited_observation_dates"] = edited_dates
 
     # Add new date button
     col1, col2 = st.columns([1, 4])
