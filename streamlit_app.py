@@ -154,7 +154,7 @@ ISSUER_CONFIGS = {
             r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "coupon_patterns": [
-            r"Contingent\s+[Cc]oupon\s+[Rr]ate[^:]{0,20}:\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*per\s+annum",
+            r"Contingent\s+[Cc]oupon\s+[Rr]ate[^0-9]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%\s*per\s+annum",
             r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
         ],
         "notional_patterns": [
@@ -840,7 +840,10 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
         debug_info.extend(extraction_debug)
         if obs_dates:
             dates["observation_dates"] = [d.isoformat() for d in obs_dates]
-            dates["pricing_date"] = obs_dates[0].isoformat()
+            # For UBS and some other issuers, don't use first observation date as pricing date
+            # They have a separate Trade Date field that should be used instead
+            if issuer not in ["UBS", "Credit Suisse"]:
+                dates["pricing_date"] = obs_dates[0].isoformat()
             dates["maturity_date"] = obs_dates[-1].isoformat()
 
     # Fallback to text parsing for observation dates if table extraction failed
@@ -852,7 +855,8 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
         debug_info.extend(text_debug)
         if text_dates:
             dates["observation_dates"] = [d.isoformat() for d in text_dates]
-            if not dates.get("pricing_date"):
+            # For UBS and some other issuers, don't use first observation date as pricing date
+            if not dates.get("pricing_date") and issuer not in ["UBS", "Credit Suisse"]:
                 dates["pricing_date"] = text_dates[0].isoformat()
             if not dates.get("maturity_date"):
                 dates["maturity_date"] = text_dates[-1].isoformat()
