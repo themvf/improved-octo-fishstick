@@ -509,16 +509,18 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if not rows:
                 continue
 
-            # Check if table looks like an example or hypothetical scenario
+            # Check if table looks like an example, hypothetical, or historical data
             # Look for keywords in the entire table text
             table_text = " ".join([" ".join(row) for row in rows])
-            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario|assumed)", table_text, flags=re.I):
-                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical data")
+            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario|assumed|historical|past\s+performance)", table_text, flags=re.I):
+                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical/historical data")
                 continue
 
-            # Also check the context before the table (look at previous text)
-            # This helps catch tables preceded by "Example:" or "The following is hypothetical:"
-            # (Would require access to surrounding text, skipping for now)
+            # Check for historical price tables by looking at headers
+            header_text = " ".join(rows[0])
+            if re.search(r"(quarterly\s+(high|low|close)|historical\s+(price|information)|past\s+performance)", header_text, flags=re.I):
+                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be historical price table")
+                continue
 
             header = rows[0]
             date_col_idx = None
@@ -534,6 +536,23 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         found_dates_in_row.append(d)
 
                 if found_dates_in_row:
+                    # Apply validation
+                    min_date = min(found_dates_in_row)
+                    max_date = max(found_dates_in_row)
+                    today = dt.date.today()
+                    current_year = today.year
+
+                    # Reject if dates are absurdly old (>20 years) - clearly not observation dates
+                    if min_date < today.replace(year=today.year - 20):
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too old (earliest: {min_date.isoformat()})")
+                        continue
+
+                    # Reject if dates are too far in the future (likely hypothetical/examples)
+                    if max_date.year > current_year + 10:
+                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too far in future (year {max_date.year})")
+                        continue
+
+                    # Valid single-row table with dates
                     debug_info.append(f"Table {tbl_idx + 1}: Single-row table with dates: {[d.strftime('%m-%d-%Y') for d in found_dates_in_row]}")
                     dates.extend(found_dates_in_row)
                     continue  # Skip normal processing for this table
@@ -582,9 +601,9 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if date_col_idx is None:
                 # Try to find any column with "date" in the header
                 for j, h in enumerate(header):
-                    # Explicitly exclude contingent payment dates, trade dates, and maturity dates
+                    # Explicitly exclude payment dates, trade dates, maturity dates, and historical quarter dates
                     if "date" in h.lower():
-                        if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement"]):
+                        if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement", "quarter"]):
                             continue
                         date_col_idx = j
                         matched_header = h
@@ -623,11 +642,25 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
                         found_in_table += 1
 
             # Validate dates before accepting this table
-            # Reject tables with dates too far in the future (likely hypothetical)
             if table_dates:
+                min_date = min(table_dates)
                 max_date = max(table_dates)
-                current_year = dt.date.today().year
-                # Allow up to 10 years in the future for long-term notes
+                today = dt.date.today()
+                current_year = today.year
+                date_span_years = (max_date - min_date).days / 365.25
+
+                # Reject if dates are absurdly old (>20 years) - clearly not observation dates
+                if min_date < today.replace(year=today.year - 20):
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - dates too old (earliest: {min_date.isoformat()})")
+                    continue
+
+                # Reject if dates span >4 years with many dates (likely historical price table)
+                # Observation dates typically span 1-3 years with 4-12 dates
+                if date_span_years > 4 and len(table_dates) > 15:
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be historical table (span: {date_span_years:.1f} years, {len(table_dates)} dates)")
+                    continue
+
+                # Reject if dates are too far in the future (likely hypothetical/examples)
                 if max_date.year > current_year + 10:
                     debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in future (year {max_date.year})")
                     continue
@@ -1269,7 +1302,16 @@ def format_date_us(date_str: str) -> str:
 
 def display_parsing_results(result: Dict[str, Any]):
     """Display parsed results with edit capability."""
-    st.header("📋 Parsed Information")
+    # Header with Clear button
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        st.header("📋 Parsed Information")
+    with col2:
+        st.write("")  # Spacing
+        if st.button("🗑️ Clear All", help="Clear all parsed data and start over"):
+            # Clear all session state
+            st.session_state.clear()
+            st.rerun()
 
     # Display extraction debug info at the top, separated from data inputs
     dates = result.get("dates", {})
@@ -1437,22 +1479,29 @@ def display_parsing_results(result: Dict[str, Any]):
             st.session_state[f"remove_flag_{idx}"] = False  # Reset flag
             break
 
-    # If a removal was requested, remove it and rerun
+    # If a removal was requested, remove it, clear all text input states, and rerun
     if remove_idx is not None:
         st.session_state["edited_observation_dates"].pop(remove_idx)
+        # Clear all text input widget states to force fresh render
+        keys_to_clear = [k for k in st.session_state.keys() if k.startswith("obs_date_text_") or k.startswith("remove_")]
+        for k in keys_to_clear:
+            del st.session_state[k]
         st.rerun()
 
     # Display each date as an editable line item with text input
-    edited_dates = []
+    # Use a unique key that includes the date value to prevent key reuse issues
     for idx, obs_date in enumerate(st.session_state["edited_observation_dates"]):
         col1, col2 = st.columns([4, 0.5])
+
+        # Create unique key based on index and date value hash
+        date_key = f"obs_date_{idx}_{hash(obs_date)}"
 
         # Text input for easy date entry (format: MM-DD-YYYY)
         with col1:
             date_str = st.text_input(
                 f"Observation Date #{idx + 1}",
                 value=obs_date.strftime("%m-%d-%Y"),
-                key=f"obs_date_text_{idx}",
+                key=date_key,
                 help="Format: MM-DD-YYYY or YYYY-MM-DD or MM/DD/YYYY"
             )
 
@@ -1463,22 +1512,16 @@ def display_parsing_results(result: Dict[str, Any]):
                 st.session_state[f"remove_flag_{idx}"] = True
                 st.rerun()
 
-        # Parse text input
-        final_date = obs_date  # Default to original
+        # Parse text input and update in place
         if date_str != obs_date.strftime("%m-%d-%Y"):
             try:
                 parsed_date = parse_date(date_str)
                 if parsed_date:
-                    final_date = parsed_date
+                    st.session_state["edited_observation_dates"][idx] = parsed_date
                 else:
                     st.error(f"Could not parse date: {date_str}")
             except Exception as e:
                 st.error(f"Invalid date format: {date_str}")
-
-        edited_dates.append(final_date)
-
-    # Update session state with edited dates
-    st.session_state["edited_observation_dates"] = edited_dates
 
     # Add new date button
     col1, col2 = st.columns([1, 4])
@@ -1759,7 +1802,8 @@ def run_full_analysis(params: Dict[str, Any]):
             obs_labels = []
 
             for idx, row in enumerate(obs_data):
-                actual_date = dt.datetime.fromisoformat(row["Actual Date"])
+                # Parse date from MM-DD-YYYY format
+                actual_date = parse_date(row["Actual Date"])
                 close_price = row["Close"]
                 obs_dates_for_chart.append(actual_date)
                 obs_prices_for_chart.append(close_price)
