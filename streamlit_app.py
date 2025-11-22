@@ -523,6 +523,20 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             date_col_idx = None
             matched_header = None
 
+            # Special case: Single-row tables where the row itself contains dates
+            # Check if the "header" row contains parseable dates
+            if len(rows) == 1:
+                found_dates_in_row = []
+                for cell in header:
+                    d = parse_date(cell)
+                    if d:
+                        found_dates_in_row.append(d)
+
+                if found_dates_in_row:
+                    debug_info.append(f"Table {tbl_idx + 1}: Single-row table with dates: {[d.strftime('%m-%d-%Y') for d in found_dates_in_row]}")
+                    dates.extend(found_dates_in_row)
+                    continue  # Skip normal processing for this table
+
             # First pass: Try issuer-specific patterns if available
             if issuer_patterns:
                 for j, h in enumerate(header):
