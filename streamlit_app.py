@@ -509,16 +509,18 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if not rows:
                 continue
 
-            # Check if table looks like an example or hypothetical scenario
+            # Check if table looks like an example, hypothetical, or historical data
             # Look for keywords in the entire table text
             table_text = " ".join([" ".join(row) for row in rows])
-            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario|assumed)", table_text, flags=re.I):
-                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical data")
+            if re.search(r"(example|hypothetical|illustrative|for\s+illustration|scenario|assumed|historical|past\s+performance)", table_text, flags=re.I):
+                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be example/hypothetical/historical data")
                 continue
 
-            # Also check the context before the table (look at previous text)
-            # This helps catch tables preceded by "Example:" or "The following is hypothetical:"
-            # (Would require access to surrounding text, skipping for now)
+            # Check for historical price tables by looking at headers
+            header_text = " ".join(rows[0])
+            if re.search(r"(quarterly\s+(high|low|close)|historical\s+(price|information)|past\s+performance)", header_text, flags=re.I):
+                debug_info.append(f"Table {tbl_idx + 1}: Skipping - appears to be historical price table")
+                continue
 
             header = rows[0]
             date_col_idx = None
@@ -582,9 +584,9 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if date_col_idx is None:
                 # Try to find any column with "date" in the header
                 for j, h in enumerate(header):
-                    # Explicitly exclude contingent payment dates, trade dates, and maturity dates
+                    # Explicitly exclude payment dates, trade dates, maturity dates, and historical quarter dates
                     if "date" in h.lower():
-                        if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement"]):
+                        if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement", "quarter"]):
                             continue
                         date_col_idx = j
                         matched_header = h
@@ -624,9 +626,18 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
 
             # Validate dates before accepting this table
             # Reject tables with dates too far in the future (likely hypothetical)
+            # or too far in the past (likely historical price data)
             if table_dates:
+                min_date = min(table_dates)
                 max_date = max(table_dates)
-                current_year = dt.date.today().year
+                today = dt.date.today()
+                current_year = today.year
+
+                # Reject if earliest date is more than 2 years in the past (likely historical data)
+                if min_date < today.replace(year=today.year - 2):
+                    debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in past (earliest: {min_date.isoformat()}, likely historical data)")
+                    continue
+
                 # Allow up to 10 years in the future for long-term notes
                 if max_date.year > current_year + 10:
                     debug_info.append(f"Table {tbl_idx + 1}: Skipping - contains dates too far in future (year {max_date.year})")
