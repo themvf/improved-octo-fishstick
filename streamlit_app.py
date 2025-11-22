@@ -1802,7 +1802,8 @@ def run_full_analysis(params: Dict[str, Any]):
             obs_labels = []
 
             for idx, row in enumerate(obs_data):
-                actual_date = dt.datetime.fromisoformat(row["Actual Date"])
+                # Parse date from MM-DD-YYYY format
+                actual_date = parse_date(row["Actual Date"])
                 close_price = row["Close"]
                 obs_dates_for_chart.append(actual_date)
                 obs_prices_for_chart.append(close_price)
