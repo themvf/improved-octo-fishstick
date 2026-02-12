@@ -1286,12 +1286,12 @@ def run_full_analysis(params: Dict[str, Any]):
 
     with st.spinner(f"Fetching prices for {ticker}..."):
         try:
-            # Fetch prices for date range (using cached wrapper)
-            df_prices = _cached_yf_download(
-                ticker,
-                start=start_date.isoformat(),
-                end=end_date.isoformat(),
-            )
+            # Download directly (skip cache) to avoid st.cache_data issues
+            import yfinance as yf
+            df_prices = yf.download(ticker, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
+            # Flatten MultiIndex columns from yfinance >= 0.2.31
+            if hasattr(df_prices.columns, 'nlevels') and df_prices.columns.nlevels > 1:
+                df_prices.columns = df_prices.columns.get_level_values(0)
 
             if df_prices.empty:
                 st.error(f"No price data found for {ticker}")
@@ -1674,19 +1674,16 @@ def run_worst_of_analysis(params: Dict[str, Any]):
             start_date = date_objects[0] - dt.timedelta(days=14)
             end_date = date_objects[-1] + dt.timedelta(days=2)
 
-            # Fetch Stock A (cached)
-            df_a = _cached_yf_download(
-                ticker_a,
-                start=start_date.isoformat(),
-                end=end_date.isoformat(),
-            )
+            # Fetch Stock A
+            import yfinance as yf
+            df_a = yf.download(ticker_a, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
+            if hasattr(df_a.columns, 'nlevels') and df_a.columns.nlevels > 1:
+                df_a.columns = df_a.columns.get_level_values(0)
 
-            # Fetch Stock B (cached)
-            df_b = _cached_yf_download(
-                ticker_b,
-                start=start_date.isoformat(),
-                end=end_date.isoformat(),
-            )
+            # Fetch Stock B
+            df_b = yf.download(ticker_b, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
+            if hasattr(df_b.columns, 'nlevels') and df_b.columns.nlevels > 1:
+                df_b.columns = df_b.columns.get_level_values(0)
 
             if df_a.empty or df_b.empty:
                 st.error(f"❌ Could not fetch price data for one or both tickers")
