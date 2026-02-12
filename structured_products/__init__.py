@@ -51,6 +51,18 @@ from .analytics import (
     calculate_risk_metrics,
     generate_analytics_summary
 )
+from .table_extractor import (
+    extract_table_key_value_pairs,
+    match_labels_to_fields,
+    parse_value,
+    LABEL_MAP,
+)
+from .filing_parser import (
+    parse_filing,
+    ParsedFiling,
+    detect_issuer,
+    ISSUER_CONFIGS,
+)
 
 __all__ = [
     "extract_symbols",
@@ -89,4 +101,12 @@ __all__ = [
     "calculate_breakeven_levels",
     "calculate_risk_metrics",
     "generate_analytics_summary",
+    "extract_table_key_value_pairs",
+    "match_labels_to_fields",
+    "parse_value",
+    "LABEL_MAP",
+    "parse_filing",
+    "ParsedFiling",
+    "detect_issuer",
+    "ISSUER_CONFIGS",
 ]

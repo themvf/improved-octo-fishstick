@@ -16,6 +16,13 @@ from typing import Dict, Any, Optional, List, Tuple
 from dateutil import parser as dp
 
 from structured_products.pdf import read_filing_content, is_pdf_supported
+from structured_products.parser import extract_text_from_html
+from structured_products.filing_parser import (
+    parse_filing,
+    ParsedFiling,
+    detect_issuer,
+    ISSUER_CONFIGS,
+)
 
 
 # Page configuration
@@ -81,399 +88,11 @@ PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*%")
 
 
 def html_to_text(raw: str) -> str:
-    """Convert HTML to plain text."""
+    """Convert HTML to plain text using the structured_products parser."""
     try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(raw, "lxml")
-        return soup.get_text("\n")
+        return extract_text_from_html(raw)
     except Exception:
         return raw
-
-
-# ========== ISSUER-SPECIFIC PARSING CONFIGURATIONS ==========
-
-ISSUER_CONFIGS = {
-    "Goldman Sachs": {
-        "initial_patterns": [
-            r"Initial\s+share\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "threshold_patterns": [
-            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "autocall_patterns": [
-            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",  # Returns 100% of initial
-        ],
-        "coupon_patterns": [
-            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "notional_patterns": [
-            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "date_column_patterns": [
-            "coupon determination date",
-            "observation date",
-        ],
-    },
-    "JP Morgan": {
-        "initial_patterns": [
-            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "threshold_patterns": [
-            r"(?:Interest\s+Barrier|Trigger\s+Value)[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "autocall_patterns": [
-            r"automatic(?:ally)?\s+call(?:ed)?",
-        ],
-        "coupon_patterns": [
-            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "notional_patterns": [
-            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"each\s+security\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "date_column_patterns": [
-            "autocall observation",
-            "review date",
-            "observation date",
-        ],
-    },
-    "UBS": {
-        "initial_patterns": [
-            r"Initial\s+[Pp]rice[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "threshold_patterns": [
-            r"Trigger\s+[Pp]rice[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Coupon\s+[Bb]arrier[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Downside\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "autocall_patterns": [
-            r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+price",  # UBS autocall at 100%
-            r"Call\s+threshold\s+level[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "coupon_patterns": [
-            r"Contingent\s+[Cc]oupon\s+[Rr]ate[^0-9]{0,50}([0-9]+(?:\.[0-9]+)?)\s*%\s*per\s+annum",
-            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "notional_patterns": [
-            r"\$\s*([0-9,]+(?:\.[0-9]+)?)\s+per\s+security",
-            r"[Pp]rincipal\s+[Aa]mount[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)\s+per\s+security",
-            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "date_column_patterns": [
-            "observation date",
-            "determination date",
-        ],
-    },
-    "Morgan Stanley": {
-        "initial_patterns": [
-            r"Initial\s+(?:share\s+)?price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "threshold_patterns": [
-            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "autocall_patterns": [
-            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Redemption\s+threshold[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "coupon_patterns": [
-            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "notional_patterns": [
-            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "date_column_patterns": [
-            "determination date",
-            "redemption determination date",
-            "observation date",
-        ],
-    },
-    "Bank of America": {
-        "initial_patterns": [
-            r"Initial\s+(?:share\s+)?price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "threshold_patterns": [
-            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "autocall_patterns": [
-            r"Call\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"automatic(?:ally)?\s+call(?:ed)?",
-        ],
-        "coupon_patterns": [
-            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "notional_patterns": [
-            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        ],
-        "date_column_patterns": [
-            "observation date",
-            "observation dates",
-            "determination date",
-        ],
-    },
-}
-
-
-def detect_issuer(text: str) -> Optional[str]:
-    """Auto-detect issuer from filing text."""
-    issuer_patterns = {
-        "Goldman Sachs": [r"GS\s+Finance\s+Corp", r"Goldman\s+Sachs\s+&\s+Co"],
-        "JP Morgan": [r"JPMorgan\s+Chase\s+Financial", r"J\.?P\.?\s*Morgan"],
-        "UBS": [r"UBS\s+AG", r"UBS\s+Financial"],
-        "Morgan Stanley": [r"Morgan\s+Stanley\s+Finance", r"Morgan\s+Stanley\s+&\s+Co"],
-        "Credit Suisse": [r"Credit\s+Suisse", r"CS\s+Finance"],
-        "HSBC": [r"HSBC\s+USA", r"HSBC\s+Bank"],
-        "Citigroup": [r"Citigroup\s+Global\s+Markets", r"Citibank"],
-        "Barclays": [r"Barclays\s+Bank", r"Barclays\s+Capital"],
-        "Bank of America": [r"Bank\s+of\s+America", r"BofA\s+Finance", r"Merrill\s+Lynch"],
-        "Royal Bank of Canada": [r"Royal\s+Bank\s+of\s+Canada", r"RBC\s+Capital"],
-        "Bank of Montreal": [r"Bank\s+of\s+Montreal", r"BMO\s+Capital"],
-        "CIBC": [r"CIBC\s+World\s+Markets", r"Canadian\s+Imperial\s+Bank"],
-    }
-
-    for issuer, patterns in issuer_patterns.items():
-        for pattern in patterns:
-            if re.search(pattern, text, flags=re.I):
-                return issuer
-
-    return None
-
-
-def parse_with_issuer_config(text: str, config: dict, initial: Optional[float] = None) -> dict:
-    """Parse filing using issuer-specific configuration."""
-    result = {
-        "initial_price": None,
-        "threshold_dollar": None,
-        "autocall_level": None,
-        "coupon_payment": None,
-        "coupon_rate_pct": None,  # For percentage-based coupons
-        "notional": None,
-    }
-
-    # Parse initial price
-    for pattern in config.get("initial_patterns", []):
-        m = re.search(pattern, text, flags=re.I)
-        if m:
-            result["initial_price"] = float(m.group(1).replace(",", ""))
-            break
-
-    # Parse threshold
-    for pattern in config.get("threshold_patterns", []):
-        m = re.search(pattern, text, flags=re.I)
-        if m:
-            result["threshold_dollar"] = float(m.group(1).replace(",", ""))
-            break
-
-    # Parse autocall level
-    for pattern in config.get("autocall_patterns", []):
-        # Special cases: patterns without dollar amounts
-        if pattern in [
-            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",
-            r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+price",  # UBS variant
-            r"automatic(?:ally)?\s+call(?:ed)?"
-        ]:
-            # No dollar amount, just set to initial
-            if re.search(pattern, text, flags=re.I) and initial:
-                result["autocall_level"] = initial
-                break
-        else:
-            m = re.search(pattern, text, flags=re.I)
-            if m:
-                result["autocall_level"] = float(m.group(1).replace(",", ""))
-                break
-
-    # Parse coupon payment (dollar amount or percentage)
-    for pattern in config.get("coupon_patterns", []):
-        m = re.search(pattern, text, flags=re.I)
-        if m:
-            value = float(m.group(1).replace(",", ""))
-            # Check if pattern is for percentage (contains "% per annum")
-            if "per\s+annum" in pattern:
-                result["coupon_rate_pct"] = value  # Annual percentage rate
-            else:
-                result["coupon_payment"] = value  # Dollar amount
-            break
-
-    # Parse notional amount
-    for pattern in config.get("notional_patterns", []):
-        m = re.search(pattern, text, flags=re.I)
-        if m:
-            result["notional"] = float(m.group(1).replace(",", ""))
-            break
-
-    return result
-
-
-# ========== ORIGINAL PARSING FUNCTIONS (FALLBACK) ==========
-
-def parse_initial_and_threshold(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Parse initial price and threshold with sophisticated logic.
-
-    Returns: (initial, threshold_dollar, threshold_pct_of_initial)
-
-    Key improvements:
-    - Dedicated search for "Initial Share Price" section
-    - Looks NEAR specific headings (tight 250-char window)
-    - Prefers precise dollar amounts immediately after heading
-    - Cross-validates $ vs % values
-    - Sanity checks to reject stray numbers
-    """
-    # Initial Share Price - dedicated search
-    initial = None
-
-    # Strategy 1: Look for "Initial Value:" or "Initial Value, which is $XXX" (common in many filings)
-    m_init_value = re.search(
-        r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_init_value:
-        initial = float(m_init_value.group(1).replace(",", ""))
-
-    # Strategy 2: Look for "Initial price:" (simple format, very common)
-    if initial is None:
-        m_init_price = re.search(
-            r"Initial\s+price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-            text,
-            flags=re.I
-        )
-        if m_init_price:
-            initial = float(m_init_price.group(1).replace(",", ""))
-
-    # Strategy 3: Look for "Initial Share Price:" or "Initial Stock Price:" as a labeled field
-    if initial is None:
-        m_init_labeled = re.search(
-            r"Initial\s+(?:Share|Stock)\s+Price[^:$]*[:]\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)",
-            text,
-            flags=re.I
-        )
-        if m_init_labeled:
-            initial = float(m_init_labeled.group(1).replace(",", ""))
-
-    # Strategy 4: If not found, look in a section titled "Initial Share Price" or "Initial Stock Price"
-    if initial is None:
-        # Find the heading and look in the 200 chars after it
-        for m in re.finditer(r"\b(Initial\s+(?:Share|Stock)\s+Price)\b", text, flags=re.I):
-            start = m.end()
-            end = min(len(text), m.end() + 200)
-            snippet = text[start:end]
-            m_val = re.search(r"\$\s*([0-9,]+(?:\.[0-9]+)?)", snippet)
-            if m_val:
-                initial = float(m_val.group(1).replace(",", ""))
-                break
-
-    # Strategy 5: Fallback to original pattern
-    if initial is None:
-        m_init = re.search(r"initial\s+share\s+price[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
-        if m_init:
-            initial = float(m_init.group(1).replace(",", ""))
-
-    threshold_dollar: Optional[float] = None
-    threshold_pct: Optional[float] = None
-
-    # 1) Prefer text right AFTER the heading (tight window) - expanded patterns
-    for m in re.finditer(r"(interest\s+barrier|trigger\s+value|downside\s+threshold\s+level|threshold\s+level|barrier\s+level)", text, flags=re.I):
-        start = m.end()  # look only AFTER the phrase
-        end = min(len(text), m.end() + 250)  # tight window
-        snippet = text[start:end]
-
-        # Prefer high-precision dollar (e.g., 178.3795)
-        m_d = re.search(r"\$?\s*([0-9]{2,5}\.[0-9]{2,5})", snippet)
-        if not m_d:
-            m_d = MONEY_RE.search(snippet)
-
-        # Percentage
-        m_p = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:of\s+the\s+initial\s+(?:value|share\s+price))?",
-                       snippet, flags=re.I)
-
-        if m_d:
-            threshold_dollar = float(m_d.group(1).replace(",", ""))
-        if m_p:
-            threshold_pct = float(m_p.group(1))
-
-        if (threshold_dollar is not None) or (threshold_pct is not None):
-            break
-
-    # 2) Wider fallback if nothing found
-    if threshold_dollar is None:
-        m_any_d = re.search(r"threshold\s+level[^$]*\$\s*([0-9,]+(?:\.[0-9]+)?)", text, flags=re.I)
-        if m_any_d:
-            threshold_dollar = float(m_any_d.group(1).replace(",", ""))
-
-    if threshold_pct is None:
-        m_any_p = re.search(r"threshold\s+level[^%]*([0-9]+(?:\.[0-9]+)?)\s*%", text, flags=re.I)
-        if m_any_p:
-            threshold_pct = float(m_any_p.group(1))
-
-    # 3) Compute $ from % if only % found
-    if threshold_dollar is None and threshold_pct is not None and initial is not None:
-        threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
-
-    # 4) Sanity cross-check when we have both
-    if (threshold_dollar is not None) and (threshold_pct is not None) and (initial is not None):
-        implied_pct = (threshold_dollar / initial) * 100.0
-        # If they disagree significantly, trust the % and recompute $
-        if abs(implied_pct - threshold_pct) > 2.0:
-            threshold_dollar = round(initial * (threshold_pct / 100.0), 10)
-
-    return initial, threshold_dollar, threshold_pct
-
-
-def parse_autocall_level(text: str, initial: Optional[float]) -> Optional[float]:
-    """
-    Parse autocall/early redemption level with context-aware search.
-
-    Note: "early redemption" is treated as synonymous with "autocall"
-    """
-    candidates = []
-
-    # Look near autocall keywords (including "early redemption" as synonym)
-    for m in re.finditer(r"(automatic(?:ally)?\s+call(?:ed)?|autocall|early\s+redemption)", text, flags=re.I):
-        start = max(0, m.start() - 250)
-        end = min(len(text), m.end() + 250)
-        candidates.append(text[start:end])
-
-    for m in re.finditer(r"(call\s+threshold\s+level|call\s+level|redemption\s+trigger|redemption\s+level)", text, flags=re.I):
-        start = max(0, m.start() - 250)
-        end = min(len(text), m.end() + 250)
-        candidates.append(text[start:end])
-
-    level = None
-    for s in candidates:
-        m_usd = MONEY_RE.search(s)
-        m_pct = PCT_RE.search(s)
-
-        if m_usd:
-            level = float(m_usd.group(1).replace(",", ""))
-            break
-        if m_pct and initial is not None:
-            level = initial * (float(m_pct.group(1)) / 100.0)
-            break
-
-    # Goldman Sachs pattern: "greater than or equal to the initial share price" (no explicit $ or %)
-    if level is None and initial is not None:
-        if re.search(r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price", text, flags=re.I):
-            level = float(initial)
-
-    # Default: 100% of initial if mentioned
-    if level is None and initial is not None:
-        if re.search(r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s*share\s*price)", text, flags=re.I):
-            level = float(initial)
-
-    return level
 
 
 def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = None) -> Tuple[List[dt.date], List[str]]:
@@ -560,6 +179,10 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             # First pass: Try issuer-specific patterns if available
             if issuer_patterns:
                 for j, h in enumerate(header):
+                    # Skip headers that are paragraph-length text (descriptions, not column names)
+                    if len(h) > 80:
+                        continue
+
                     # Skip payment date columns
                     if re.search(r"(contingent\s+payment|coupon\s+payment|payment\s+date)", h, flags=re.I):
                         debug_info.append(f"Table {tbl_idx + 1}: Skipping payment date column: '{h}'")
@@ -580,6 +203,10 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             # Second pass: Generic patterns if no issuer match
             if date_col_idx is None:
                 for j, h in enumerate(header):
+                    # Skip headers that are paragraph-length text (descriptions, not column names)
+                    if len(h) > 80:
+                        continue
+
                     # Skip contingent payment dates AND coupon payment dates - we only want observation/determination dates
                     if re.search(r"(contingent\s+payment|coupon\s+payment|payment\s+date)", h, flags=re.I):
                         debug_info.append(f"Table {tbl_idx + 1}: Skipping payment date column: '{h}'")
@@ -601,6 +228,9 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             if date_col_idx is None:
                 # Try to find any column with "date" in the header
                 for j, h in enumerate(header):
+                    # Skip paragraph-length headers (descriptions, not column names)
+                    if len(h) > 80:
+                        continue
                     # Explicitly exclude payment dates, trade dates, maturity dates, and historical quarter dates
                     if "date" in h.lower():
                         if any(exclude in h.lower() for exclude in ["contingent", "payment", "trade", "maturity", "settlement", "quarter"]):
@@ -635,6 +265,10 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             for r in rows[1:]:
                 if date_col_idx < len(r):
                     cell_text = r[date_col_idx]
+                    # Strip footnote/special characters that EDGAR appends (†, ‡, Ɨ, §, etc.)
+                    cell_text = re.sub(r'[†‡Ɨ§¶\u2020\u2021\u0197\u00a7\u00b6]+', '', cell_text)
+                    # Remove trailing parenthetical notes like "(determination date)"
+                    cell_text = re.sub(r'\s*\([^)]*\)\s*$', '', cell_text).strip()
                     d = parse_date(cell_text)
                     if d:
                         table_dates.append(d)
@@ -685,101 +319,6 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
         return unique_dates, debug_info
     except Exception as e:
         return [], [f"Error during extraction: {str(e)}"]
-
-
-def parse_coupon_rate(text: str) -> Optional[float]:
-    """Parse coupon rate (per annum) and coupon payment amount."""
-    # Try to find annual coupon rate
-    m_apr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum|p\.a\.|annual)", text, flags=re.I)
-    if m_apr:
-        return float(m_apr.group(1))
-
-    # Try "Contingent Interest Rate" (common in autocall notes)
-    m_contingent = re.search(
-        r"Contingent\s+Interest\s+Rate[^:]*[:]\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s*annum)?",
-        text,
-        flags=re.I
-    )
-    if m_contingent:
-        return float(m_contingent.group(1))
-
-    return None
-
-
-def parse_coupon_payment(text: str) -> Optional[float]:
-    """Parse coupon payment in dollars per period."""
-    # Goldman Sachs pattern: "Contingent quarterly coupon: $0.5375"
-    m_gs_coupon = re.search(
-        r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+coupon[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_gs_coupon:
-        return float(m_gs_coupon.group(1).replace(",", ""))
-
-    # Look for patterns like "Contingent Interest Payment ... $37.50"
-    # Allow up to 200 chars between "Contingent Interest Payment" and the dollar amount
-    m_payment = re.search(
-        r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_payment:
-        return float(m_payment.group(1).replace(",", ""))
-
-    # Look for quarterly/period payment amount
-    m_period = re.search(
-        r"(?:payable\s+at\s+a\s+rate\s+of|payment\s+of)\s+([0-9]+(?:\.[0-9]+)?)\s*%\s*(?:per\s+quarter|quarterly)",
-        text,
-        flags=re.I
-    )
-    if m_period:
-        # This is a percentage per quarter, need to convert to dollars
-        # Will return None here and let the UI handle it
-        return None
-
-    return None
-
-
-def parse_notional(text: str) -> Optional[float]:
-    """Parse notional/principal amount."""
-    # Pattern 1: "per $X principal amount" or "per $X stated principal amount"
-    m_per = re.search(
-        r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
-        text,
-        flags=re.I
-    )
-    if m_per:
-        return float(m_per.group(1).replace(",", ""))
-
-    # Pattern 2: "principal amount of $X" or "stated principal amount of $X"
-    m_of = re.search(
-        r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_of:
-        return float(m_of.group(1).replace(",", ""))
-
-    # Pattern 3: "each security has a principal amount of $X"
-    m_each = re.search(
-        r"each\s+(?:security|note)\s+has\s+a\s+(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_each:
-        return float(m_each.group(1).replace(",", ""))
-
-    # Pattern 4: "principal amount per security: $X"
-    m_per_sec = re.search(
-        r"principal\s+amount\s+per\s+(?:security|note)[:\s]+\$\s*([0-9,]+(?:\.[0-9]+)?)",
-        text,
-        flags=re.I
-    )
-    if m_per_sec:
-        return float(m_per_sec.group(1).replace(",", ""))
-
-    return None
 
 
 def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> Tuple[List[dt.date], List[str]]:
@@ -1210,81 +749,73 @@ def display_sidebar():
     }
 
 
+@st.cache_data(show_spinner=False)
+def _cached_parse_filing(content: str, is_html: bool, issuer: str) -> Dict[str, Any]:
+    """Cached wrapper around parse_filing to avoid re-parsing the same content."""
+    filing = parse_filing(content, is_html, issuer)
+    return filing.to_dict()
+
+
 def analyze_filing_advanced(content: str, is_html: bool, options: Dict[str, Any], issuer: str = "Auto-detect") -> Dict[str, Any]:
-    """Analyze filing with advanced parsing."""
+    """Analyze filing with the unified 3-tier parsing pipeline.
+
+    Tier 1: HTML table extraction (highest confidence)
+    Tier 2: Issuer-specific regex
+    Tier 3: Generic regex fallbacks
+    """
     result = {}
 
-    with st.spinner("🔍 Parsing with advanced logic..."):
-        # Convert to text for analysis
-        text = html_to_text(content) if is_html else content
+    with st.spinner("Parsing with table-first pipeline..."):
+        # Run the unified pipeline (cached by content + issuer)
+        parsed = _cached_parse_filing(content, is_html, issuer)
 
-        # Detect issuer if set to auto-detect
-        detected_issuer = None
-        if issuer == "Auto-detect":
-            detected_issuer = detect_issuer(text)
-            if detected_issuer:
-                st.info(f"📌 Detected issuer: **{detected_issuer}**")
-                issuer = detected_issuer
-
-        # Use issuer-specific parsing if available
-        if issuer in ISSUER_CONFIGS:
-            config = ISSUER_CONFIGS[issuer]
-            st.success(f"✅ Using {issuer}-specific parsing")
-
-            # Parse with issuer config (first pass to get initial)
-            issuer_result = parse_with_issuer_config(text, config, None)
-            initial = issuer_result["initial_price"]
-
-            # Re-parse with initial value for autocall
-            issuer_result = parse_with_issuer_config(text, config, initial)
-
-            threshold_dollar = issuer_result["threshold_dollar"]
-            autocall_level = issuer_result["autocall_level"]
-            coupon_payment = issuer_result["coupon_payment"]
-            coupon_rate_pct = issuer_result.get("coupon_rate_pct")  # Annual % rate
-            notional = issuer_result["notional"]
-
-            # Calculate threshold percentage
-            threshold_pct = None
-            if threshold_dollar and initial:
-                threshold_pct = (threshold_dollar / initial) * 100
-
-            # Convert annual coupon % to quarterly % if needed
-            contingent_payment_pct = None
-            if coupon_rate_pct:
-                # Assume quarterly payments (4 per year) - can be adjusted
-                contingent_payment_pct = coupon_rate_pct / 4
+        # Report issuer detection
+        detected_issuer = parsed.get("issuer")
+        if detected_issuer:
+            if detected_issuer in ISSUER_CONFIGS:
+                st.success(f"Detected issuer: **{detected_issuer}** (issuer-specific patterns active)")
+            else:
+                st.info(f"Detected issuer: **{detected_issuer}** (using generic parsing)")
         else:
-            # Fall back to generic parsing
-            st.info("ℹ️ Using generic parsing (issuer not configured)")
-            initial, threshold_dollar, threshold_pct = parse_initial_and_threshold(text)
-            autocall_level = parse_autocall_level(text, initial)
-            coupon_payment = parse_coupon_payment(text)
-            notional = parse_notional(text)
-            coupon_rate_pct = None
-            contingent_payment_pct = None
+            st.info("Using generic parsing (issuer not detected)")
 
-        # Parse dates with issuer-specific patterns
-        dates = parse_dates_comprehensive(content, is_html, issuer if issuer != "Auto-detect" else None)
+        # Copy core fields to result
+        result["initial_price"] = parsed.get("initial_price")
+        result["threshold_dollar"] = parsed.get("threshold_dollar")
+        result["threshold_pct"] = parsed.get("threshold_pct")
+        result["autocall_level"] = parsed.get("autocall_level")
+        result["coupon_rate_annual"] = parsed.get("coupon_rate_annual")
+        result["coupon_payment_per_period"] = parsed.get("coupon_payment_per_period")
+        result["contingent_payment_pct"] = parsed.get("contingent_payment_pct")
+        result["notional"] = parsed.get("notional")
+        result["issuer"] = detected_issuer
 
-        # Parse coupon rate and ticker (same for all)
-        coupon_rate = parse_coupon_rate(text) if not coupon_rate_pct else coupon_rate_pct
-        ticker = detect_underlying_ticker(text, html=content if is_html else None)
-
-        # Store results
-        result["initial_price"] = initial
-        result["threshold_dollar"] = threshold_dollar
-        result["threshold_pct"] = threshold_pct
-        result["autocall_level"] = autocall_level
-        result["coupon_rate_annual"] = coupon_rate
-        result["coupon_payment_per_period"] = coupon_payment
-        result["contingent_payment_pct"] = contingent_payment_pct  # Store the calculated quarterly %
-        result["notional"] = notional
+        # Parse dates (stays in streamlit_app.py — specialized logic)
+        text = html_to_text(content) if is_html else content
+        dates = parse_dates_comprehensive(
+            content, is_html, detected_issuer if detected_issuer else None
+        )
         result["dates"] = dates
-        result["ticker"] = ticker
-        result["issuer"] = issuer if issuer != "Auto-detect" else detected_issuer
 
-        st.success("✅ Parsing complete")
+        # Ticker detection (stays here — uses multi-strategy chain)
+        ticker = detect_underlying_ticker(text, html=content if is_html else None)
+        result["ticker"] = ticker
+
+        # Show extraction sources in an expander
+        sources = parsed.get("extraction_sources", {})
+        warnings = parsed.get("validation_warnings", [])
+        if sources or warnings:
+            with st.expander("Extraction metadata"):
+                if sources:
+                    st.caption("**Field sources** (where each value was extracted from):")
+                    for field_name, source in sorted(sources.items()):
+                        st.text(f"  {field_name}: {source}")
+                if warnings:
+                    st.caption("**Validation warnings:**")
+                    for w in warnings:
+                        st.warning(w)
+
+        st.success("Parsing complete")
 
     return result
 
@@ -1669,6 +1200,13 @@ def main():
                     run_full_analysis(confirmed_params)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_yf_download(ticker: str, start: str, end: str):
+    """Cached yfinance download (5-minute TTL) to avoid repeated API calls."""
+    import yfinance as yf
+    return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+
+
 def run_full_analysis(params: Dict[str, Any]):
     """Run full analysis with price fetching and visualization."""
     import yfinance as yf
@@ -1703,19 +1241,17 @@ def run_full_analysis(params: Dict[str, Any]):
             start_date = date_objects[0] - dt.timedelta(days=14)
             end_date = date_objects[-1] + dt.timedelta(days=2)
 
-            df_prices = yf.download(
+            df_prices = _cached_yf_download(
                 ticker,
                 start=start_date.isoformat(),
                 end=end_date.isoformat(),
-                progress=False,
-                auto_adjust=False
             )
 
             if df_prices.empty:
-                st.error(f"❌ No price data found for {ticker}")
+                st.error(f"No price data found for {ticker}")
                 return
 
-            st.success(f"✅ Fetched {len(df_prices)} price records")
+            st.success(f"Fetched {len(df_prices)} price records")
 
             # Build observation table
             obs_data = []
@@ -2092,22 +1628,18 @@ def run_worst_of_analysis(params: Dict[str, Any]):
             start_date = date_objects[0] - dt.timedelta(days=14)
             end_date = date_objects[-1] + dt.timedelta(days=2)
 
-            # Fetch Stock A
-            df_a = yf.download(
+            # Fetch Stock A (cached)
+            df_a = _cached_yf_download(
                 ticker_a,
                 start=start_date.isoformat(),
                 end=end_date.isoformat(),
-                progress=False,
-                auto_adjust=False
             )
 
-            # Fetch Stock B
-            df_b = yf.download(
+            # Fetch Stock B (cached)
+            df_b = _cached_yf_download(
                 ticker_b,
                 start=start_date.isoformat(),
                 end=end_date.isoformat(),
-                progress=False,
-                auto_adjust=False
             )
 
             if df_a.empty or df_b.empty:
