@@ -145,36 +145,12 @@ def extract_observation_dates_from_tables(html: str, issuer: Optional[str] = Non
             date_col_idx = None
             matched_header = None
 
-            # Special case: Single-row tables where the row itself contains dates
-            # Check if the "header" row contains parseable dates
+            # Skip single-row tables — they contain stray dates (maturity,
+            # issue, legal boilerplate) that are NOT observation dates.
+            # Real observation dates come from multi-row tables with proper
+            # date column headers like "Coupon determination dates".
             if len(rows) == 1:
-                found_dates_in_row = []
-                for cell in header:
-                    d = parse_date(cell)
-                    if d:
-                        found_dates_in_row.append(d)
-
-                if found_dates_in_row:
-                    # Apply validation
-                    min_date = min(found_dates_in_row)
-                    max_date = max(found_dates_in_row)
-                    today = dt.date.today()
-                    current_year = today.year
-
-                    # Reject if dates are absurdly old (>20 years) - clearly not observation dates
-                    if min_date < today.replace(year=today.year - 20):
-                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too old (earliest: {min_date.isoformat()})")
-                        continue
-
-                    # Reject if dates are too far in the future (likely hypothetical/examples)
-                    if max_date.year > current_year + 10:
-                        debug_info.append(f"Table {tbl_idx + 1}: Skipping single-row table - dates too far in future (year {max_date.year})")
-                        continue
-
-                    # Valid single-row table with dates
-                    debug_info.append(f"Table {tbl_idx + 1}: Single-row table with dates: {[d.strftime('%m-%d-%Y') for d in found_dates_in_row]}")
-                    dates.extend(found_dates_in_row)
-                    continue  # Skip normal processing for this table
+                continue
 
             # First pass: Try issuer-specific patterns if available
             if issuer_patterns:
@@ -428,11 +404,8 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
         debug_info.extend(extraction_debug)
         if obs_dates:
             dates["observation_dates"] = [d.isoformat() for d in obs_dates]
-            # For UBS and some other issuers, don't use first observation date as pricing date
-            # They have a separate Trade Date field that should be used instead
-            if issuer not in ["UBS", "Credit Suisse"]:
-                dates["pricing_date"] = obs_dates[0].isoformat()
-            dates["maturity_date"] = obs_dates[-1].isoformat()
+            # Note: pricing_date and maturity_date are extracted separately
+            # by regex below — observation dates are NOT reliable proxies.
 
     # Fallback to text parsing for observation dates if table extraction failed
     text = html_to_text(raw_content) if is_html else raw_content
@@ -443,11 +416,6 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
         debug_info.extend(text_debug)
         if text_dates:
             dates["observation_dates"] = [d.isoformat() for d in text_dates]
-            # For UBS and some other issuers, don't use first observation date as pricing date
-            if not dates.get("pricing_date") and issuer not in ["UBS", "Credit Suisse"]:
-                dates["pricing_date"] = text_dates[0].isoformat()
-            if not dates.get("maturity_date"):
-                dates["maturity_date"] = text_dates[-1].isoformat()
             debug_info.append(f"Text parsing found {len(text_dates)} observation/review dates")
 
     # Store debug info
@@ -456,39 +424,63 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
     # Continue with other date parsing
     # (Fallback to text parsing for other dates remains below)
 
-    # Pricing date
+    # Pricing date — handles both "Pricing date: June 18, 2021" and
+    # "pricing date (June 18, 2021)" formats used by different issuers
     if "pricing_date" not in dates:
-        m_pricing = re.search(r"pricing\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
-        if m_pricing:
-            d = parse_date(m_pricing.group(1))
-            if d:
-                dates["pricing_date"] = d.isoformat()
+        for pat in [
+            r"pricing\s+date\s*[:\-]\s*(.+)",
+            r"pricing\s+date\s*\(([^)]+)\)",
+            r"pricing\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
+        ]:
+            m_pricing = re.search(pat, text, flags=re.I)
+            if m_pricing:
+                d = parse_date(m_pricing.group(1))
+                if d:
+                    dates["pricing_date"] = d.isoformat()
+                    break
 
     # Trade date
-    m_trade = re.search(r"trade\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
-    if m_trade:
-        d = parse_date(m_trade.group(1))
-        if d:
-            dates["trade_date"] = d.isoformat()
-            # For UBS and other issuers, if no pricing_date found, use trade_date as pricing_date
-            if "pricing_date" not in dates and issuer in ["UBS", "Credit Suisse", "Barclays"]:
-                dates["pricing_date"] = d.isoformat()
-                debug_info.append(f"Using Trade Date as Pricing Date for {issuer}")
+    for pat in [
+        r"trade\s+date\s*[:\-]\s*(.+)",
+        r"trade\s+date\s*\(([^)]+)\)",
+        r"trade\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
+    ]:
+        m_trade = re.search(pat, text, flags=re.I)
+        if m_trade:
+            d = parse_date(m_trade.group(1))
+            if d:
+                dates["trade_date"] = d.isoformat()
+                if "pricing_date" not in dates and issuer in ["UBS", "Credit Suisse", "Barclays"]:
+                    dates["pricing_date"] = d.isoformat()
+                    debug_info.append(f"Using Trade Date as Pricing Date for {issuer}")
+                break
 
     # Maturity date
     if "maturity_date" not in dates:
-        m_maturity = re.search(r"maturity\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
-        if m_maturity:
-            d = parse_date(m_maturity.group(1))
-            if d:
-                dates["maturity_date"] = d.isoformat()
+        for pat in [
+            r"maturity\s+date\s*[:\-]\s*(.+)",
+            r"maturity\s+date\s*\(([^)]+)\)",
+            r"maturity\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
+        ]:
+            m_maturity = re.search(pat, text, flags=re.I)
+            if m_maturity:
+                d = parse_date(m_maturity.group(1))
+                if d:
+                    dates["maturity_date"] = d.isoformat()
+                    break
 
     # Settlement date
-    m_settlement = re.search(r"settlement\s+date[^:\n]*[:\-\s]\s*(.+)", text, flags=re.I)
-    if m_settlement:
-        d = parse_date(m_settlement.group(1))
-        if d:
-            dates["settlement_date"] = d.isoformat()
+    for pat in [
+        r"settlement\s+date\s*[:\-]\s*(.+)",
+        r"settlement\s+date\s*\(([^)]+)\)",
+        r"settlement\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
+    ]:
+        m_settlement = re.search(pat, text, flags=re.I)
+        if m_settlement:
+            d = parse_date(m_settlement.group(1))
+            if d:
+                dates["settlement_date"] = d.isoformat()
+                break
 
     return dates
 
@@ -559,22 +551,46 @@ def detect_underlying_ticker(text: str, html: Optional[str] = None) -> Optional[
         if fund_name in text_upper:
             return ticker
 
-    # Strategy 2: Look for explicit "Underlying: TICKER" patterns
+    # Strategy 2: Bloomberg symbol (e.g. "DOCU UW", "AAPL UW", "MSFT UN")
+    # EDGAR filings often include Bloomberg tickers in format "TICKER UW" or "TICKER UN"
+    # Note: guillemets «» may render as replacement chars, so use \W to match any non-word char
+    m_bloomberg = re.search(
+        r'bloomberg\s+(?:symbol|ticker)\W{0,10}?([A-Z]{2,5})\s+(?:U[WNPQ]|LN|JT|GR|FP)\b',
+        text, flags=re.I
+    )
+    if m_bloomberg:
+        return m_bloomberg.group(1).upper()
+
+    # Strategy 2b: Ticker in parentheses right after company name
+    # e.g. "DocuSign, Inc. (DOCU)" or "Apple Inc. (AAPL)"
+    _FALSE_POSITIVES = {
+        "THE", "AND", "FOR", "EACH", "PER", "DATE", "PRICE", "LEVEL",
+        "VALUE", "FROM", "WILL", "NYSE", "NASDAQ", "FATCA", "ERISA",
+        "OTC", "FDIC", "SEC", "IRS", "CUSIP", "ISIN", "JUNE", "JULY",
+        "CORP", "INC", "LLC", "ETF",
+    }
+
+    m_company_ticker = re.search(
+        r'(?:Inc|Corp|Ltd|LLC|Company|Co)\.\s*\(([A-Z]{1,5})\)',
+        text,
+    )
+    if m_company_ticker:
+        ticker = m_company_ticker.group(1)
+        if ticker not in _FALSE_POSITIVES:
+            return ticker
+
+    # Strategy 2c: Look for explicit "Underlying: TICKER" patterns
     patterns = [
-        r"underlying[^:\n]*:\s*([A-Z]{1,5})\b",
-        r"ticker[^:\n]*:\s*([A-Z]{1,5})\b",
-        r"symbol[^:\n]*:\s*([A-Z]{1,5})\b",
-        r"(?:common\s+)?stock\s+of\s+([A-Z]{1,5})\b",
         r"\(ticker:\s*([A-Z]{1,5})\)",
         r"\(symbol:\s*([A-Z]{1,5})\)",
+        r"ticker[^:\n]*:\s*([A-Z]{1,5})\b",
     ]
 
     for pattern in patterns:
         m = re.search(pattern, text, flags=re.I)
         if m:
             ticker = m.group(1).upper()
-            # Filter out common false positives
-            if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "DATE", "PRICE", "LEVEL", "VALUE", "FROM", "WILL"]:
+            if ticker not in _FALSE_POSITIVES:
                 return ticker
 
     # Strategy 3: Extract from tables (if HTML provided)
@@ -612,11 +628,11 @@ def detect_underlying_ticker(text: str, html: Optional[str] = None) -> Optional[
         except:
             pass  # Fall through to next strategy
 
-    # Strategy 4: Look for common stock patterns like "shares of AAPL" or "Apple Inc. (AAPL)"
-    m = re.search(r'\(([A-Z]{1,5})\)', text)
-    if m:
-        ticker = m.group(1).upper()
-        if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "NYSE", "NASDAQ"]:
+    # Strategy 4: Look for ticker in parentheses anywhere in text
+    # e.g. "(AAPL)" — but only uppercase to avoid matching acronyms
+    for m in re.finditer(r'\(([A-Z]{1,5})\)', text):
+        ticker = m.group(1)
+        if ticker not in _FALSE_POSITIVES:
             return ticker
 
     # Strategy 5: Use structured_products library as fallback
@@ -628,7 +644,7 @@ def detect_underlying_ticker(text: str, html: Optional[str] = None) -> Optional[
         for ticker in symbols.get("raw_tickers", []):
             if not ticker.startswith("^") and len(ticker) <= 5:
                 # Filter out common false positives
-                if ticker not in ["THE", "AND", "FOR", "EACH", "PER", "DATE", "PRICE", "LEVEL", "VALUE", "FROM", "WILL", "USD", "HTML"]:
+                if ticker.upper() not in _FALSE_POSITIVES and ticker not in ["USD", "HTML"]:
                     return ticker
     except:
         pass
