@@ -1220,7 +1220,12 @@ def main():
 def _cached_yf_download(ticker: str, start: str, end: str):
     """Cached yfinance download (5-minute TTL) to avoid repeated API calls."""
     import yfinance as yf
-    return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+    df = yf.download(ticker, start=start, end=end, progress=False)
+    # yfinance >= 0.2.31 returns MultiIndex columns like ('Close', 'DOCU').
+    # Flatten to simple column names so df['Close'] works everywhere.
+    if hasattr(df.columns, 'nlevels') and df.columns.nlevels > 1:
+        df.columns = df.columns.get_level_values(0)
+    return df
 
 
 def run_full_analysis(params: Dict[str, Any]):
