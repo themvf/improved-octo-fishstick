@@ -169,12 +169,44 @@ ISSUER_CONFIGS: Dict[str, Dict[str, List[str]]] = {
             "determination date",
         ],
     },
+    "Barclays": {
+        "initial_patterns": [
+            r"Initial\s+underlier\s+value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Initial\s+(?:share\s+)?price[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Initial\s+Value[^$]{0,30}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "threshold_patterns": [
+            r"Downside\s+threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Threshold\s+level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Knock[- ]?in\s+(?:barrier\s+)?level[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "autocall_patterns": [
+            # These must match entries in _AUTOCALL_EQUALS_INITIAL_PATTERNS exactly
+            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?(?:price|value|underlier\s+value|level)",
+            r"at\s+or\s+above\s+the\s+initial\s+(?:share\s+)?(?:price|value|underlier\s+value|level)",
+            r"automatic(?:ally)?\s+call(?:ed)?",
+        ],
+        "coupon_patterns": [
+            r"Contingent\s+(?:quarterly|monthly|semi-annual|annual)\s+(?:coupon|payment)[^$]{0,50}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+            r"Contingent\s+Interest\s+Payment[^$]{0,200}\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "notional_patterns": [
+            r"per\s+\$\s*([0-9,]+(?:\.[0-9]+)?)\s+(?:stated\s+)?principal\s+amount",
+            r"(?:stated\s+)?principal\s+amount\s+of\s+\$\s*([0-9,]+(?:\.[0-9]+)?)",
+        ],
+        "date_column_patterns": [
+            "determination date",
+            "coupon determination date",
+            "observation date",
+        ],
+    },
 }
 
 # Patterns without dollar capture groups (autocall equals initial price)
 _AUTOCALL_EQUALS_INITIAL_PATTERNS = [
-    r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price",
-    r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+price",
+    r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?(?:price|value|underlier\s+value|level)",
+    r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+(?:price|value|underlier\s+value|level)",
+    r"at\s+or\s+above\s+the\s+initial\s+(?:share\s+)?(?:price|value|underlier\s+value|level)",
     r"automatic(?:ally)?\s+call(?:ed)?",
 ]
 
@@ -252,7 +284,11 @@ def _extract_with_issuer_regex(
 
     # --- autocall_level ---
     for pattern in config.get("autocall_patterns", []):
-        if pattern in _AUTOCALL_EQUALS_INITIAL_PATTERNS:
+        # Check if this pattern has a capture group (i.e., extracts a dollar value)
+        # vs. a semantic pattern like "greater than or equal to the initial price"
+        has_capture_group = bool(re.search(r'\((?!\?)', pattern))
+        if not has_capture_group:
+            # No capture group → semantic "equals initial" pattern
             if re.search(pattern, text, flags=re.I) and init_val:
                 result["autocall_level"] = {
                     "value": init_val,
@@ -419,7 +455,41 @@ def _extract_generic_initial_and_threshold(
 def _extract_generic_autocall(
     text: str, initial: Optional[float]
 ) -> Optional[Dict[str, Any]]:
-    """Generic autocall level extraction (Tier 3)."""
+    """Generic autocall level extraction (Tier 3).
+
+    Uses a sanity check: if *initial* is known, reject any dollar-based
+    autocall candidate that exceeds 5× initial (likely an aggregate
+    principal amount, not a per-security price level).
+    """
+
+    # --- Check semantic "equals initial" patterns FIRST ---
+    # These are the most reliable because they describe the rule directly
+    # rather than relying on a nearby dollar amount.
+    if initial is not None:
+        _EQUALS_INITIAL_PATS = [
+            r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+"
+            r"(?:share\s+)?(?:price|value|underlier\s+value|level)",
+            r"equal\s+to\s+or\s+greater\s+than\s+the\s+initial\s+"
+            r"(?:share\s+)?(?:price|value|underlier\s+value|level)",
+            r"at\s+or\s+above\s+the\s+initial\s+"
+            r"(?:share\s+)?(?:price|value|underlier\s+value|level)",
+            r"at\s+least\s+(?:equal\s+to\s+)?the\s+initial\s+"
+            r"(?:share\s+)?(?:price|value|underlier\s+value|level)",
+        ]
+        for pat in _EQUALS_INITIAL_PATS:
+            if re.search(pat, text, flags=re.I):
+                return {"value": float(initial), "source": "regex_generic",
+                        "pattern": "generic_autocall_equals_initial"}
+
+        # "100% of initial"
+        if re.search(
+            r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s+(?:share\s+)?(?:price|value|underlier\s+value|level))",
+            text, flags=re.I,
+        ):
+            return {"value": float(initial), "source": "regex_generic",
+                    "pattern": "generic_autocall_100pct"}
+
+    # --- Dollar/percentage based extraction from context windows ---
     candidates = []
 
     for m in re.finditer(
@@ -442,23 +512,22 @@ def _extract_generic_autocall(
         m_usd = MONEY_RE.search(s)
         m_pct = PCT_RE.search(s)
         if m_usd:
-            return {"value": float(m_usd.group(1).replace(",", "")),
+            val = float(m_usd.group(1).replace(",", ""))
+            # Sanity check: autocall level should be near the initial price,
+            # not an aggregate principal amount (e.g., $27,544,000)
+            if initial is not None and val > initial * 5:
+                logger.debug(
+                    f"Rejecting autocall candidate ${val:,.2f} "
+                    f"(>5× initial ${initial:.2f})"
+                )
+                continue
+            return {"value": val,
                     "source": "regex_generic", "pattern": "generic_autocall"}
         if m_pct and initial is not None:
-            return {"value": initial * (float(m_pct.group(1)) / 100.0),
-                    "source": "regex_generic", "pattern": "generic_autocall_pct"}
-
-    # "greater than or equal to the initial share price"
-    if initial is not None:
-        if re.search(r"greater\s+than\s+or\s+equal\s+to\s+the\s+initial\s+(?:share\s+)?price", text, flags=re.I):
-            return {"value": float(initial), "source": "regex_generic",
-                    "pattern": "generic_autocall_equals_initial"}
-
-    # "100% of initial"
-    if initial is not None:
-        if re.search(r"\b100\s*%\s*(?:of\s+the\s+initial|initial\s*share\s*price)", text, flags=re.I):
-            return {"value": float(initial), "source": "regex_generic",
-                    "pattern": "generic_autocall_100pct"}
+            pct_val = float(m_pct.group(1))
+            if 50 <= pct_val <= 150:  # reasonable autocall percentage range
+                return {"value": initial * (pct_val / 100.0),
+                        "source": "regex_generic", "pattern": "generic_autocall_pct"}
 
     return None
 

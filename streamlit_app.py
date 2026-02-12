@@ -314,51 +314,49 @@ def extract_review_dates_from_text(text: str, issuer: Optional[str] = None) -> T
 
     # Build patterns based on issuer
     base_patterns = []
+    # Separator pattern: allows footnote chars (†, *, ‡, §, etc.) between label and colon
+    _SEP = r'[^\w]{0,5}?\s*:\s*'
+
+    _STOP = r"(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|We\s+also\s+refer|$)"
 
     if issuer == "UBS":
-        # UBS uses "Determination dates:" (note: lowercase 'd' and often tab after colon)
         base_patterns = [
-            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
-            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
         debug_info.append("Using UBS-specific text date patterns")
     elif issuer == "Morgan Stanley":
-        # Morgan Stanley uses similar format to UBS: "Determination dates:" with tab
-        # Also uses "Redemption determination dates:"
         base_patterns = [
-            r"Redemption\s+determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
-            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
-            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Redemption\s+determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
         debug_info.append("Using Morgan Stanley-specific text date patterns")
     elif issuer == "Goldman Sachs":
-        # Goldman Sachs uses "Coupon determination dates:"
         base_patterns = [
-            r"Coupon\s+determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
-            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+            r"Coupon\s+determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
         debug_info.append("Using Goldman Sachs-specific text date patterns")
     elif issuer == "JP Morgan":
-        # JP Morgan uses "Review dates:"
         base_patterns = [
-            r"Review\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
-            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|$)",
+            r"Review\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
         debug_info.append("Using JP Morgan-specific text date patterns")
     elif issuer == "Bank of America":
-        # Bank of America uses "Observation dates:"
         base_patterns = [
-            r"Observation\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
-            r"Determination\s+dates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to\s+postponement|,?\s+subject\s+to|$)",
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
         debug_info.append("Using Bank of America-specific text date patterns")
     else:
-        # Generic patterns for all other issuers
+        # Generic patterns for all other issuers (including Barclays, Credit Suisse, etc.)
         base_patterns = [
-            r"Review\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-            r"Observation\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-            r"Determination\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)",
-            r"Coupon\s+[Dd]etermination\s+[Dd]ates[\s:]*[:\t\s]+([^\.]+?)(?:,?\s+subject\s+to|Interest\s+Payment|Maturity\s+Date|\*?\s*[Ss]ubject|$)"
+            r"Review\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Observation\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
+            r"Coupon\s+determination\s+dates" + _SEP + r"([^\.]+?)" + _STOP,
         ]
 
     for pattern in base_patterns:
@@ -407,7 +405,48 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
             # Note: pricing_date and maturity_date are extracted separately
             # by regex below — observation dates are NOT reliable proxies.
 
-    # Fallback to text parsing for observation dates if table extraction failed
+    # Tier 2: Extract dates from table key-value pairs (label like "Determination dates")
+    # Some filings store dates as a comma-separated list in a table cell value
+    if is_html and ("observation_dates" not in dates or not dates["observation_dates"]):
+        from structured_products.table_extractor import extract_table_key_value_pairs
+        pairs = extract_table_key_value_pairs(raw_content)
+        date_label_patterns = [
+            r"(?:coupon\s+)?determination\s+dates?",
+            r"(?:call\s+)?observation\s+dates?",
+            r"(?:autocall\s+)?observation\s+dates?",
+            r"review\s+dates?",
+            r"valuation\s+dates?",
+            r"redemption\s+determination\s+dates?",
+        ]
+        for pair in pairs:
+            label_lower = pair["label"].lower()
+            # Strip footnote chars from label for matching
+            label_clean = re.sub(r'[*†‡§¶\u2020\u2021\u0197\u00a7\u00b6]+', '', label_lower).strip()
+            for pat in date_label_patterns:
+                if re.search(pat, label_clean, re.I):
+                    # Found a date list label — parse dates from the value text
+                    raw_val = pair["value"]["raw"]
+                    # Parse all dates from the comma-separated value
+                    found_dates = []
+                    for date_str in re.findall(
+                        r"(?:January|February|March|April|May|June|July|August|"
+                        r"September|October|November|December)\s+\d{1,2},?\s+\d{4}",
+                        raw_val, re.I
+                    ):
+                        d = parse_date(date_str)
+                        if d:
+                            found_dates.append(d)
+                    if found_dates:
+                        dates["observation_dates"] = [d.isoformat() for d in sorted(set(found_dates))]
+                        debug_info.append(
+                            f"Extracted {len(found_dates)} dates from table pair "
+                            f"'{pair['label']}' (pattern: {pat})"
+                        )
+                    break
+            if "observation_dates" in dates:
+                break
+
+    # Tier 3: Fallback to text parsing for observation dates
     text = html_to_text(raw_content) if is_html else raw_content
 
     if "observation_dates" not in dates or not dates["observation_dates"]:
@@ -424,13 +463,20 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
     # Continue with other date parsing
     # (Fallback to text parsing for other dates remains below)
 
-    # Pricing date — handles both "Pricing date: June 18, 2021" and
-    # "pricing date (June 18, 2021)" formats used by different issuers
+    # Date regex: captures "Month DD, YYYY" or "YYYY-MM-DD" immediately after a separator.
+    # [^\w]{0,8}? handles footnote chars (*, †, ‡, §) before the colon.
+    _DATESEP = r'[^\w]{0,8}?\s*[:\-]\s*'   # label → colon/dash with footnote tolerance
+    _DVAL = (                                # captures date value
+        r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?)\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})"
+    )
+
+    # Pricing date
     if "pricing_date" not in dates:
         for pat in [
-            r"pricing\s+date\s*[:\-]\s*(.+)",
+            r"pricing\s+date" + _DATESEP + _DVAL,
             r"pricing\s+date\s*\(([^)]+)\)",
-            r"pricing\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
         ]:
             m_pricing = re.search(pat, text, flags=re.I)
             if m_pricing:
@@ -441,9 +487,8 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
 
     # Trade date
     for pat in [
-        r"trade\s+date\s*[:\-]\s*(.+)",
+        r"trade\s+date" + _DATESEP + _DVAL,
         r"trade\s+date\s*\(([^)]+)\)",
-        r"trade\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
     ]:
         m_trade = re.search(pat, text, flags=re.I)
         if m_trade:
@@ -458,9 +503,8 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
     # Maturity date
     if "maturity_date" not in dates:
         for pat in [
-            r"maturity\s+date\s*[:\-]\s*(.+)",
+            r"maturity\s+date" + _DATESEP + _DVAL,
             r"maturity\s+date\s*\(([^)]+)\)",
-            r"maturity\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
         ]:
             m_maturity = re.search(pat, text, flags=re.I)
             if m_maturity:
@@ -471,9 +515,7 @@ def parse_dates_comprehensive(raw_content: str, is_html: bool, issuer: Optional[
 
     # Settlement date
     for pat in [
-        r"settlement\s+date\s*[:\-]\s*(.+)",
-        r"settlement\s+date\s*\(([^)]+)\)",
-        r"settlement\s+date\s+(\w+\s+\d{1,2},?\s+\d{4})",
+        r"(?:original\s+)?(?:issue|settlement)\s+date" + _DATESEP + _DVAL,
     ]:
         m_settlement = re.search(pat, text, flags=re.I)
         if m_settlement:

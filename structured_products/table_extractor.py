@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 LABEL_MAP: Dict[str, List[str]] = {
     "initial_price": [
         r"initial\s+(?:share\s+)?price",
-        r"initial\s+value",
+        r"initial\s+(?:underlier\s+)?value",
         r"initial\s+(?:stock\s+)?price",
         r"initial\s+level",
         r"initial\s+closing\s+(?:price|value|level)",
@@ -60,7 +60,7 @@ LABEL_MAP: Dict[str, List[str]] = {
         r"call\s+price",
     ],
     "coupon_payment": [
-        r"contingent\s+(?:quarterly|monthly|semi[- ]?annual|annual)\s+coupon",
+        r"contingent\s+(?:quarterly|monthly|semi[- ]?annual|annual)\s+(?:coupon|payment)",
         r"contingent\s+interest\s+payment",
         r"contingent\s+coupon\s+(?:payment|amount)",
         r"coupon\s+(?:payment|amount)\s+per\s+(?:security|note)",
@@ -400,11 +400,13 @@ def match_labels_to_fields(
 # Helpers
 # ---------------------------------------------------------------------------
 def _clean_label(label: str) -> str:
-    """Normalize label text: strip trailing colons, parens, extra whitespace."""
+    """Normalize label text: strip footnote markers, trailing colons, extra whitespace."""
     label = label.strip()
+    # Strip footnote/superscript markers: *, †, ‡, §, ¶, numbers in parens like (1)
+    label = re.sub(r'[*†‡§¶\u2020\u2021\u0197\u00a7\u00b6]+', '', label)
     label = re.sub(r"[:\s]+$", "", label)
     label = re.sub(r"\s+", " ", label)
-    return label
+    return label.strip()
 
 
 def _looks_like_label(text: str) -> bool:
