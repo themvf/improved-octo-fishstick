@@ -1256,12 +1256,37 @@ def run_full_analysis(params: Dict[str, Any]):
 
     st.header("💰 Price Analysis")
 
+    # Debug expander — shows download parameters and raw results
+    with st.expander("Debug: Price Download Details", expanded=False):
+        st.text(f"Ticker: {ticker}")
+        st.text(f"Observation dates ({len(date_objects)}): {[d.isoformat() for d in date_objects[:5]]}{'...' if len(date_objects) > 5 else ''}")
+        start_date = date_objects[0] - dt.timedelta(days=14)
+        end_date = date_objects[-1] + dt.timedelta(days=2)
+        st.text(f"Download range: {start_date.isoformat()} to {end_date.isoformat()}")
+
+        # Raw download (uncached) for debugging
+        import yfinance as yf
+        try:
+            debug_df = yf.download(ticker, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
+            st.text(f"Raw yf.download result: {len(debug_df)} rows")
+            st.text(f"Columns: {list(debug_df.columns)}")
+            st.text(f"Column nlevels: {debug_df.columns.nlevels if hasattr(debug_df.columns, 'nlevels') else 'N/A'}")
+            st.text(f"Empty: {debug_df.empty}")
+            st.text(f"yfinance version: {yf.__version__}")
+            if not debug_df.empty:
+                st.text(f"Index dtype: {debug_df.index.dtype}")
+                st.text(f"First date: {debug_df.index[0]}")
+                st.text(f"Last date: {debug_df.index[-1]}")
+                # Flatten for display
+                if hasattr(debug_df.columns, 'nlevels') and debug_df.columns.nlevels > 1:
+                    debug_df.columns = debug_df.columns.get_level_values(0)
+                st.dataframe(debug_df.head(5))
+        except Exception as debug_err:
+            st.error(f"Debug download error: {type(debug_err).__name__}: {debug_err}")
+
     with st.spinner(f"Fetching prices for {ticker}..."):
         try:
-            # Fetch prices for date range
-            start_date = date_objects[0] - dt.timedelta(days=14)
-            end_date = date_objects[-1] + dt.timedelta(days=2)
-
+            # Fetch prices for date range (using cached wrapper)
             df_prices = _cached_yf_download(
                 ticker,
                 start=start_date.isoformat(),
