@@ -1270,6 +1270,45 @@ def _cached_yf_download(ticker: str, start: str, end: str):
     return df
 
 
+def get_split_adjustment(ticker: str, pricing_date_str: str) -> Tuple[float, str]:
+    """
+    Calculate the cumulative split factor for *ticker* since *pricing_date_str*.
+
+    Returns (factor, description):
+      - factor: cumulative product of split ratios (e.g. 3.0 for a 3:1 split)
+      - description: human-readable summary (e.g. "10:1 on 2024-06-07")
+      - If no splits occurred or on error, returns (1.0, "")
+    """
+    try:
+        import yfinance as yf
+        stock = yf.Ticker(ticker)
+        splits = stock.splits
+        if splits.empty:
+            return 1.0, ""
+
+        pricing_date = dt.datetime.fromisoformat(pricing_date_str).date()
+
+        # Filter splits that occurred after the pricing date.
+        # yfinance splits index may be tz-aware; compare using .date()
+        after_pricing = splits[splits.index.map(lambda x: x.date()) > pricing_date]
+
+        if after_pricing.empty:
+            return 1.0, ""
+
+        factor = float(after_pricing.prod())
+        if factor <= 0:
+            st.warning(f"⚠️ Invalid split factor ({factor}) for {ticker}. Using 1.0 instead.")
+            return 1.0, ""
+        descriptions = [
+            f"{int(ratio) if ratio == int(ratio) else ratio}:1 on {idx.date().isoformat()}"
+            for idx, ratio in after_pricing.items()
+        ]
+        return factor, "; ".join(descriptions)
+    except Exception as e:
+        st.warning(f"⚠️ Could not fetch split data for {ticker}: {e}")
+        return 1.0, ""
+
+
 def run_full_analysis(params: Dict[str, Any]):
     """Run full analysis with price fetching and visualization."""
     import yfinance as yf
@@ -1296,6 +1335,35 @@ def run_full_analysis(params: Dict[str, Any]):
     date_objects = [dt.datetime.fromisoformat(d).date() for d in observation_dates]
     date_objects.sort()
 
+    # --- Stock split adjustment ---
+    # Yahoo Finance returns split-adjusted prices, but filing parameters are
+    # unadjusted. Divide filing params by the cumulative split factor so they
+    # become comparable to Yahoo's adjusted price history.
+    params = dict(params)  # shallow copy to avoid mutating session state
+    pricing_date = dates_dict.get("pricing_date")
+    split_factor, split_desc = 1.0, ""
+    if pricing_date:
+        split_factor, split_desc = get_split_adjustment(ticker, pricing_date)
+        if split_factor != 1.0:
+            orig_initial = params.get("initial", 0)
+            orig_threshold = params.get("threshold_dollar", 0)
+            orig_autocall = params.get("autocall_level", 0)
+            if orig_initial:
+                params["initial"] = orig_initial / split_factor
+            if orig_threshold:
+                params["threshold_dollar"] = orig_threshold / split_factor
+            if orig_autocall:
+                params["autocall_level"] = orig_autocall / split_factor
+            st.info(
+                f"📊 **Stock Split Adjustment Applied** — {ticker} split {split_desc} since pricing date.\n\n"
+                f"Filing parameters adjusted to match Yahoo Finance's split-adjusted prices:\n"
+                f"- Initial: ${orig_initial:.2f} → ${params['initial']:.2f}\n"
+                f"- Threshold: ${orig_threshold:.2f} → ${params['threshold_dollar']:.2f}\n"
+                f"- Autocall: ${orig_autocall:.2f} → ${params['autocall_level']:.2f}"
+            )
+    else:
+        st.warning("⚠️ No pricing date available — stock split adjustment skipped.")
+
     st.header("💰 Price Analysis")
 
     # Debug expander — shows download parameters and raw results
@@ -1305,6 +1373,9 @@ def run_full_analysis(params: Dict[str, Any]):
         start_date = date_objects[0] - dt.timedelta(days=14)
         end_date = date_objects[-1] + dt.timedelta(days=2)
         st.text(f"Download range: {start_date.isoformat()} to {end_date.isoformat()}")
+        st.text(f"Split factor: {split_factor} {'(' + split_desc + ')' if split_desc else '(no splits)'}")
+        if split_factor != 1.0:
+            st.text(f"Adjusted initial: ${params.get('initial', 0):.2f}  |  Adjusted threshold: ${params.get('threshold_dollar', 0):.2f}  |  Adjusted autocall: ${params.get('autocall_level', 0):.2f}")
 
         # Raw download (uncached) for debugging
         import yfinance as yf
@@ -1667,6 +1738,45 @@ def run_worst_of_analysis(params: Dict[str, Any]):
     # Convert to date objects
     date_objects = [dt.datetime.fromisoformat(d).date() for d in observation_dates]
     date_objects.sort()
+
+    # --- Stock split adjustment for worst-of ---
+    params = dict(params)  # shallow copy to avoid mutating session state
+    pricing_date = dates_dict.get("pricing_date")
+    split_factor_a, split_desc_a = 1.0, ""
+    split_factor_b, split_desc_b = 1.0, ""
+    if pricing_date:
+        split_factor_a, split_desc_a = get_split_adjustment(ticker_a, pricing_date)
+        split_factor_b, split_desc_b = get_split_adjustment(ticker_b, pricing_date)
+        if split_factor_a != 1.0 or split_factor_b != 1.0:
+            adjustments = []
+            if split_factor_a != 1.0:
+                orig_initial_a = initial_a
+                initial_a = initial_a / split_factor_a
+                adjustments.append(
+                    f"- {ticker_a}: Initial ${orig_initial_a:.2f} → ${initial_a:.2f} (split {split_desc_a})"
+                )
+            if split_factor_b != 1.0:
+                orig_initial_b = initial_b
+                initial_b = initial_b / split_factor_b
+                adjustments.append(
+                    f"- {ticker_b}: Initial ${orig_initial_b:.2f} → ${initial_b:.2f} (split {split_desc_b})"
+                )
+            # Autocall level and threshold_dollar are stated relative to stock A
+            if split_factor_a != 1.0:
+                if params.get("autocall_level"):
+                    orig_ac = params["autocall_level"]
+                    params["autocall_level"] = orig_ac / split_factor_a
+                    adjustments.append(f"- Autocall Level: ${orig_ac:.2f} → ${params['autocall_level']:.2f}")
+                if params.get("threshold_dollar"):
+                    orig_td = params["threshold_dollar"]
+                    params["threshold_dollar"] = orig_td / split_factor_a
+                    # Recalculate threshold_pct from adjusted values
+                    if initial_a > 0:
+                        params["threshold_pct"] = (params["threshold_dollar"] / initial_a) * 100
+                    adjustments.append(f"- Threshold: ${orig_td:.2f} → ${params['threshold_dollar']:.2f}")
+            st.info("📊 **Stock Split Adjustment Applied**\n\n" + "\n".join(adjustments))
+    else:
+        st.warning("⚠️ No pricing date available — stock split adjustment skipped.")
 
     st.header("💰 Worst-Of Autocallable Analysis (2 Assets)")
 
