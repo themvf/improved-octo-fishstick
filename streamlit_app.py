@@ -1545,18 +1545,31 @@ def run_full_analysis(params: Dict[str, Any]):
             st.subheader("🔔 Autocall Analysis")
 
             # Explicit explanation of autocall trigger logic
-            st.info(
-                "ℹ️ **Autocall Trigger Logic:** The product is automatically called when the "
-                f"closing price is **greater than or equal to (≥)** the autocall level "
-                f"(${params.get('autocall_level', 0):.2f}). The first observation date is typically "
-                "not eligible for autocall."
-            )
+            autocall_val = params.get('autocall_level', 0)
+            initial_val = params.get('initial', 0)
+            if autocall_val and initial_val and abs(autocall_val - initial_val) < 0.01:
+                autocall_explain = (
+                    "ℹ️ **Autocall Trigger Logic:** The product is automatically called when the "
+                    f"closing price is **greater than or equal to (≥)** the initial share price "
+                    f"(${autocall_val:.2f}). The last observation date (final valuation) is not "
+                    "eligible for autocall — it uses the maturity payoff logic instead."
+                )
+            else:
+                autocall_explain = (
+                    "ℹ️ **Autocall Trigger Logic:** The product is automatically called when the "
+                    f"closing price is **greater than or equal to (≥)** the autocall level "
+                    f"(${autocall_val:.2f}). The last observation date (final valuation) is not "
+                    "eligible for autocall — it uses the maturity payoff logic instead."
+                )
+            st.info(autocall_explain)
 
             autocalled = False
             call_date = None
 
+            # All observation dates except the last are eligible for autocall.
+            # The last date is the final valuation (maturity payoff logic applies).
             for idx, row in df_obs.iterrows():
-                if idx > 0 and row.get("Autocall Triggered"):  # First observation usually not eligible
+                if idx < len(df_obs) - 1 and row.get("Autocall Triggered"):
                     autocalled = True
                     call_date = row["Observation Date"]
                     break
@@ -1904,8 +1917,10 @@ def run_worst_of_analysis(params: Dict[str, Any]):
             autocalled = False
             call_date = None
 
+            # All observation dates except the last are eligible for autocall.
+            # The last date is the final valuation (maturity payoff logic applies).
             for idx, row in df_obs.iterrows():
-                if idx > 0 and row.get("Both Above Autocall"):
+                if idx < len(df_obs) - 1 and row.get("Both Above Autocall"):
                     autocalled = True
                     call_date = row["Observation Date"]
                     break
