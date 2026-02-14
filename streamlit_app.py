@@ -914,8 +914,8 @@ def display_parsing_results(result: Dict[str, Any]):
     st.subheader("🧩 Product Type")
     product_type = st.radio(
         "Select the autocallable structure:",
-        ["Single Stock", "Worst-Of (2 Assets)"],
-        help="Choose 'Worst-Of' if the note is linked to 2 stocks where the worst performer determines the payout"
+        ["Single Stock", "Worst-Of (2 Assets)", "Worst-Of (3 Assets)"],
+        help="Choose 'Worst-Of' if the note is linked to multiple stocks where the worst performer determines the payout"
     )
 
     col1, col2 = st.columns(2)
@@ -974,7 +974,9 @@ def display_parsing_results(result: Dict[str, Any]):
             ).upper()
             ticker_b = None
             initial_b = None
-        else:  # Worst-Of (2 Assets)
+            ticker_c = None
+            initial_c = None
+        elif product_type == "Worst-Of (2 Assets)":
             col_a, col_b = st.columns(2)
             with col_a:
                 ticker = st.text_input(
@@ -1001,6 +1003,53 @@ def display_parsing_results(result: Dict[str, Any]):
                     format="%.4f",
                     help="Initial price for Stock B",
                     key="initial_b"
+                )
+            ticker_c = None
+            initial_c = None
+        else:  # Worst-Of (3 Assets)
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                ticker = st.text_input(
+                    "Stock A Ticker",
+                    value=result.get("ticker") or "TICKER",
+                    help="First stock ticker symbol",
+                    key="ticker_a_3"
+                ).upper()
+            with col_b:
+                ticker_b = st.text_input(
+                    "Stock B Ticker",
+                    value="TICKER",
+                    help="Second stock ticker symbol",
+                    key="ticker_b_3"
+                ).upper()
+            with col_c:
+                ticker_c = st.text_input(
+                    "Stock C Ticker",
+                    value="TICKER",
+                    help="Third stock ticker symbol",
+                    key="ticker_c_3"
+                ).upper()
+
+            # Initial prices for all three stocks
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.caption(f"**Stock A ({ticker}) Initial Price:**")
+                # Use the parsed initial price for Stock A
+            with col_b:
+                initial_b = st.number_input(
+                    f"Stock B ({ticker_b}) Initial ($)",
+                    value=100.0,
+                    format="%.4f",
+                    help="Initial price for Stock B",
+                    key="initial_b_3"
+                )
+            with col_c:
+                initial_c = st.number_input(
+                    f"Stock C ({ticker_c}) Initial ($)",
+                    value=100.0,
+                    format="%.4f",
+                    help="Initial price for Stock C",
+                    key="initial_c"
                 )
 
         # Use detected notional if available, otherwise default to 1000.0
@@ -1142,6 +1191,8 @@ def display_parsing_results(result: Dict[str, Any]):
         "ticker": ticker,
         "ticker_b": ticker_b,
         "initial_b": initial_b,
+        "ticker_c": ticker_c,
+        "initial_c": initial_c,
         "notional": notional,
         "payments_per_year": payments_per_year,
         "dates": dates
@@ -1252,7 +1303,7 @@ def main():
 
         with col2:
             if st.button("📊 Run Full Analysis", use_container_width=True, type="primary"):
-                if confirmed_params.get("product_type") == "Worst-Of (2 Assets)":
+                if confirmed_params.get("product_type", "").startswith("Worst-Of"):
                     run_worst_of_analysis(confirmed_params)
                 else:
                     run_full_analysis(confirmed_params)
@@ -1715,29 +1766,48 @@ def run_full_analysis(params: Dict[str, Any]):
 
 
 def run_worst_of_analysis(params: Dict[str, Any]):
-    """Run worst-of autocallable analysis for 2 assets."""
+    """Run worst-of autocallable analysis for 2 or 3 assets."""
     import yfinance as yf
 
-    ticker_a = params.get("ticker")
-    ticker_b = params.get("ticker_b")
-    initial_a = params.get("initial")
-    initial_b = params.get("initial_b")
+    product_type = params.get("product_type", "")
+    expected_count = 3 if "3 Assets" in product_type else 2
     dates_dict = params.get("dates", {})
     observation_dates = dates_dict.get("observation_dates", [])
 
-    # Validation
-    if not ticker_a or ticker_a == "TICKER":
-        st.error("❌ Please specify a valid ticker for Stock A")
+    # --- Build dynamic assets list ---
+    assets = []
+    # Stock A (always present)
+    t_a = params.get("ticker")
+    i_a = params.get("initial")
+    if t_a and t_a != "TICKER" and i_a and i_a > 0:
+        assets.append({"ticker": t_a, "initial": i_a, "label": "Stock A"})
+    else:
+        missing = "ticker" if (not t_a or t_a == "TICKER") else "initial price"
+        st.error(f"❌ Please specify a valid {missing} for Stock A")
         return
-    if not ticker_b or ticker_b == "TICKER":
-        st.error("❌ Please specify a valid ticker for Stock B")
+
+    # Stock B
+    t_b = params.get("ticker_b")
+    i_b = params.get("initial_b")
+    if t_b and t_b != "TICKER" and i_b and i_b > 0:
+        assets.append({"ticker": t_b, "initial": i_b, "label": "Stock B"})
+    else:
+        missing = "ticker" if (not t_b or t_b == "TICKER") else "initial price"
+        st.error(f"❌ Please specify a valid {missing} for Stock B")
         return
-    if not initial_a or initial_a <= 0:
-        st.error("❌ Please specify a valid initial price for Stock A")
-        return
-    if not initial_b or initial_b <= 0:
-        st.error("❌ Please specify a valid initial price for Stock B")
-        return
+
+    # Stock C (only for 3-asset)
+    if expected_count == 3:
+        t_c = params.get("ticker_c")
+        i_c = params.get("initial_c")
+        if t_c and t_c != "TICKER" and i_c and i_c > 0:
+            assets.append({"ticker": t_c, "initial": i_c, "label": "Stock C"})
+        else:
+            missing = "ticker" if (not t_c or t_c == "TICKER") else "initial price"
+            st.error(f"❌ Please specify a valid {missing} for Stock C")
+            return
+
+    num_assets = len(assets)
 
     if not observation_dates:
         st.warning("⚠️ No observation dates found. Using key dates instead...")
@@ -1755,59 +1825,58 @@ def run_worst_of_analysis(params: Dict[str, Any]):
     # --- Stock split adjustment for worst-of ---
     params = dict(params)  # shallow copy to avoid mutating session state
     pricing_date = dates_dict.get("pricing_date")
-    split_factor_a, split_desc_a = 1.0, ""
-    split_factor_b, split_desc_b = 1.0, ""
     if pricing_date:
-        split_factor_a, split_desc_a = get_split_adjustment(ticker_a, pricing_date)
-        split_factor_b, split_desc_b = get_split_adjustment(ticker_b, pricing_date)
-        if split_factor_a != 1.0 or split_factor_b != 1.0:
-            adjustments = []
-            if split_factor_a != 1.0:
-                orig_initial_a = initial_a
-                initial_a = initial_a / split_factor_a
+        adjustments = []
+        for asset in assets:
+            factor, desc = get_split_adjustment(asset["ticker"], pricing_date)
+            asset["split_factor"] = factor
+            asset["split_desc"] = desc
+            if factor != 1.0:
+                orig = asset["initial"]
+                asset["initial"] = orig / factor
                 adjustments.append(
-                    f"- {ticker_a}: Initial ${orig_initial_a:.2f} → ${initial_a:.2f} (split {split_desc_a})"
+                    f"- {asset['ticker']}: Initial ${orig:.2f} → ${asset['initial']:.2f} (split {desc})"
                 )
-            if split_factor_b != 1.0:
-                orig_initial_b = initial_b
-                initial_b = initial_b / split_factor_b
-                adjustments.append(
-                    f"- {ticker_b}: Initial ${orig_initial_b:.2f} → ${initial_b:.2f} (split {split_desc_b})"
-                )
-            # Autocall level and threshold_dollar are stated relative to stock A
-            if split_factor_a != 1.0:
-                if params.get("autocall_level"):
-                    orig_ac = params["autocall_level"]
-                    params["autocall_level"] = orig_ac / split_factor_a
-                    adjustments.append(f"- Autocall Level: ${orig_ac:.2f} → ${params['autocall_level']:.2f}")
-                if params.get("threshold_dollar"):
-                    orig_td = params["threshold_dollar"]
-                    params["threshold_dollar"] = orig_td / split_factor_a
-                    # Recalculate threshold_pct from adjusted values
-                    if initial_a > 0:
-                        params["threshold_pct"] = (params["threshold_dollar"] / initial_a) * 100
-                    adjustments.append(f"- Threshold: ${orig_td:.2f} → ${params['threshold_dollar']:.2f}")
+        # Autocall level and threshold_dollar are stated relative to Stock A
+        if assets[0].get("split_factor", 1.0) != 1.0:
+            sf_a = assets[0]["split_factor"]
+            if params.get("autocall_level"):
+                orig_ac = params["autocall_level"]
+                params["autocall_level"] = orig_ac / sf_a
+                adjustments.append(f"- Autocall Level: ${orig_ac:.2f} → ${params['autocall_level']:.2f}")
+            if params.get("threshold_dollar"):
+                orig_td = params["threshold_dollar"]
+                params["threshold_dollar"] = orig_td / sf_a
+                if assets[0]["initial"] > 0:
+                    params["threshold_pct"] = (params["threshold_dollar"] / assets[0]["initial"]) * 100
+                adjustments.append(f"- Threshold: ${orig_td:.2f} → ${params['threshold_dollar']:.2f}")
+        if adjustments:
             st.info("📊 **Stock Split Adjustment Applied**\n\n" + "\n".join(adjustments))
     else:
         st.warning("⚠️ No pricing date available — stock split adjustment skipped.")
 
-    st.header("💰 Worst-Of Autocallable Analysis (2 Assets)")
+    st.header(f"💰 Worst-Of Autocallable Analysis ({num_assets} Assets)")
 
     # Explain worst-of structure
     with st.expander("🧩 What is a Worst-Of Autocallable? (Click to expand)"):
-        st.markdown("""
+        example_lines = "\n        ".join(
+            f"- Stock {chr(65+i)}: {['+5%', '-40%', '+12%'][i]} ({[105, 60, 112][i]}% of initial)"
+            + (" ← **Worst performer**" if i == 1 else "")
+            for i in range(num_assets)
+        )
+        st.markdown(f"""
         ### How Worst-Of Autocallables Work
 
-        A **worst-of autocallable** linked to two stocks pays coupons and determines outcomes based on the **worst performer**:
+        A **worst-of autocallable** linked to {num_assets} stocks pays coupons and determines outcomes based on the **worst performer**:
 
         #### 🟢 During the Life (Monthly/Quarterly Checks)
 
         **Coupon Payment:**
-        - You receive the coupon **only if BOTH stocks are at or above the coupon barrier**
-        - If either stock drops below the barrier, no coupon that period
+        - You receive the coupon **only if ALL {num_assets} stocks are at or above the coupon barrier**
+        - If any stock drops below the barrier, no coupon that period
 
         **Autocall (Early Redemption):**
-        - The note autocalls **only if BOTH stocks are at or above the autocall level**
+        - The note autocalls **only if ALL {num_assets} stocks are at or above the autocall level**
         - If autocalled, you get your principal back plus the coupon for that period
 
         #### 🔴 At Maturity (If Not Autocalled)
@@ -1818,14 +1887,13 @@ def run_worst_of_analysis(params: Dict[str, Any]):
         - **If worst performer < final barrier:** You lose money proportional to the worst stock's decline
 
         **Example:**
-        - Stock A: +5% (105% of initial)
-        - Stock B: -40% (60% of initial) ← **Worst performer**
+        {example_lines}
         - Final barrier: 70% of initial
-        - **Result:** You lose 40% of your principal, even though Stock A performed well
+        - **Result:** You lose 40% of your principal, even though other stocks performed well
 
         #### 💡 Why "Worst-Of"?
 
-        You're taking on **double the risk** because both stocks must perform well for you to:
+        You're taking on **{num_assets}x the risk** because all {num_assets} stocks must perform well for you to:
         - Receive coupons
         - Get autocalled early
         - Avoid losses at maturity
@@ -1833,73 +1901,89 @@ def run_worst_of_analysis(params: Dict[str, Any]):
         In exchange, these notes typically offer **higher coupon rates** than single-stock autocallables.
         """)
 
-    with st.spinner(f"Fetching prices for {ticker_a} and {ticker_b}..."):
+    ticker_list = ", ".join(a["ticker"] for a in assets)
+    with st.spinner(f"Fetching prices for {ticker_list}..."):
         try:
-            # Fetch prices for both stocks
+            # Fetch prices for all stocks
             start_date = date_objects[0] - dt.timedelta(days=14)
             end_date = date_objects[-1] + dt.timedelta(days=2)
 
-            # Fetch Stock A
-            import yfinance as yf
-            df_a = yf.download(ticker_a, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
-            if hasattr(df_a.columns, 'nlevels') and df_a.columns.nlevels > 1:
-                df_a.columns = df_a.columns.get_level_values(0)
+            for asset in assets:
+                df = yf.download(asset["ticker"], start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
+                if hasattr(df.columns, 'nlevels') and df.columns.nlevels > 1:
+                    df.columns = df.columns.get_level_values(0)
+                asset["df"] = df
 
-            # Fetch Stock B
-            df_b = yf.download(ticker_b, start=start_date.isoformat(), end=end_date.isoformat(), progress=False)
-            if hasattr(df_b.columns, 'nlevels') and df_b.columns.nlevels > 1:
-                df_b.columns = df_b.columns.get_level_values(0)
-
-            if df_a.empty or df_b.empty:
-                st.error(f"❌ Could not fetch price data for one or both tickers")
+            # Check all fetched successfully
+            missing = [a["ticker"] for a in assets if a["df"].empty]
+            if missing:
+                st.error(f"❌ Could not fetch price data for: {', '.join(missing)}")
                 return
 
-            st.success(f"✅ Fetched {len(df_a)} price records for {ticker_a} and {len(df_b)} for {ticker_b}")
+            counts = ", ".join(f"{len(a['df'])} for {a['ticker']}" for a in assets)
+            st.success(f"✅ Fetched {counts}")
 
             # Build observation table
             obs_data = []
+            initial_a = assets[0]["initial"]  # Stock A initial for autocall_pct calc
+
             for obs_date in date_objects:
-                # Find close on or before obs_date for Stock A
-                prices_a_before = df_a[df_a.index.date <= obs_date]
-                prices_b_before = df_b[df_b.index.date <= obs_date]
-
-                if not prices_a_before.empty and not prices_b_before.empty:
-                    price_a = float(prices_a_before['Close'].iloc[-1])
-                    price_b = float(prices_b_before['Close'].iloc[-1])
-                    actual_date = prices_a_before.index[-1].date()
-
-                    # Calculate % of initial
-                    pct_a = (price_a / initial_a) * 100
-                    pct_b = (price_b / initial_b) * 100
-
-                    # Worst performer
-                    worst_pct = min(pct_a, pct_b)
-                    worst_ticker = ticker_a if pct_a < pct_b else ticker_b
-
-                    row = {
-                        "Observation Date": obs_date.strftime("%m-%d-%Y"),
-                        "Actual Date": actual_date.strftime("%m-%d-%Y"),
-                        f"{ticker_a} Price": price_a,
-                        f"{ticker_a} % of Initial": f"{pct_a:.2f}%",
-                        f"{ticker_b} Price": price_b,
-                        f"{ticker_b} % of Initial": f"{pct_b:.2f}%",
-                        "Worst Performer": worst_ticker,
-                        "Worst %": f"{worst_pct:.2f}%",
+                # Get prices for all assets on or before obs_date
+                prices_before = {}
+                all_have_data = True
+                for asset in assets:
+                    subset = asset["df"][asset["df"].index.date <= obs_date]
+                    if subset.empty:
+                        all_have_data = False
+                        break
+                    prices_before[asset["ticker"]] = {
+                        "price": float(subset['Close'].iloc[-1]),
+                        "actual_date": subset.index[-1].date()
                     }
 
-                    # Check barriers
-                    threshold_pct = params.get("threshold_pct", 70)
-                    autocall_pct = (params.get("autocall_level", initial_a) / initial_a) * 100
+                if not all_have_data:
+                    continue
 
-                    # Coupon: BOTH must be above threshold
-                    both_above_threshold = (pct_a >= threshold_pct) and (pct_b >= threshold_pct)
-                    row["Both Above Coupon Barrier"] = both_above_threshold
+                # Calculate % of initial for each asset
+                pcts = {}
+                for asset in assets:
+                    t = asset["ticker"]
+                    pcts[t] = (prices_before[t]["price"] / asset["initial"]) * 100
 
-                    # Autocall: BOTH must be above autocall level
-                    both_above_autocall = (pct_a >= autocall_pct) and (pct_b >= autocall_pct)
-                    row["Both Above Autocall"] = both_above_autocall
+                # Worst performer
+                worst_ticker = min(pcts, key=pcts.get)
+                worst_pct = pcts[worst_ticker]
 
-                    obs_data.append(row)
+                # Use Stock A's actual date as the reference
+                actual_date = prices_before[assets[0]["ticker"]]["actual_date"]
+
+                row = {
+                    "Observation Date": obs_date.strftime("%m-%d-%Y"),
+                    "Actual Date": actual_date.strftime("%m-%d-%Y"),
+                }
+
+                # Add per-asset columns dynamically
+                for asset in assets:
+                    t = asset["ticker"]
+                    row[f"{t} Price"] = prices_before[t]["price"]
+                    row[f"{t} % of Initial"] = f"{pcts[t]:.2f}%"
+
+                row["Worst Performer"] = worst_ticker
+                row["Worst %"] = f"{worst_pct:.2f}%"
+
+                # Check barriers
+                threshold_pct = params.get("threshold_pct", 70)
+                autocall_pct = (params.get("autocall_level", initial_a) / initial_a) * 100
+
+                # Coupon: ALL must be above threshold
+                all_above_threshold = all(pcts[a["ticker"]] >= threshold_pct for a in assets)
+                row["All Above Coupon Barrier"] = all_above_threshold
+
+                # Autocall: ALL must be above autocall level
+                all_above_autocall = all(pcts[a["ticker"]] >= autocall_pct for a in assets)
+                row["All Above Autocall"] = all_above_autocall
+
+                obs_data.append(row)
 
             if not obs_data:
                 st.error("❌ Could not match prices to observation dates")
@@ -1916,11 +2000,13 @@ def run_worst_of_analysis(params: Dict[str, Any]):
 
             autocalled = False
             call_date = None
+            worst_ticker = None
+            final_worst_pct = None
 
             # All observation dates except the last are eligible for autocall.
             # The last date is the final valuation (maturity payoff logic applies).
             for idx, row in df_obs.iterrows():
-                if idx < len(df_obs) - 1 and row.get("Both Above Autocall"):
+                if idx < len(df_obs) - 1 and row.get("All Above Autocall"):
                     autocalled = True
                     call_date = row["Observation Date"]
                     break
@@ -1932,7 +2018,7 @@ def run_worst_of_analysis(params: Dict[str, Any]):
 
             if autocalled:
                 st.success(f"✅ **AUTOCALLED** on {call_date}")
-                st.write("Both stocks were above the autocall level. Product called early.")
+                st.write("All stocks were above the autocall level. Product called early.")
                 st.write("Investor receives: Principal + accrued coupons")
             else:
                 st.info("ℹ️ **Not Autocalled** - Product runs to maturity")
@@ -1986,14 +2072,14 @@ def run_worst_of_analysis(params: Dict[str, Any]):
                 for idx, row in df_obs.iterrows():
                     if autocalled and idx > df_obs[df_obs["Observation Date"] == call_date].index[0]:
                         break
-                    if row.get("Both Above Coupon Barrier"):
+                    if row.get("All Above Coupon Barrier"):
                         eligible_periods += 1
 
                 total_coupons = eligible_periods * coupon_per_period
 
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Contingent Payment per Period", f"${coupon_per_period:.2f}")
-                col2.metric("Eligible Periods (Both Above Barrier)", eligible_periods)
+                col2.metric("Eligible Periods (All Above Barrier)", eligible_periods)
                 col3.metric("Total Payments", f"${total_coupons:.2f}")
 
                 # Total return
@@ -2031,7 +2117,6 @@ def run_worst_of_analysis(params: Dict[str, Any]):
 
                     # Add explanation if there's downside
                     if principal_return < notional:
-                        payment_offset = total_coupons
                         st.info(
                             f"💡 **Explanation:** The worst performer ({worst_ticker}) declined {abs(loss_pct):.2f}%, "
                             f"causing a principal loss of ${abs(principal_return - notional):.2f}. "
@@ -2042,12 +2127,17 @@ def run_worst_of_analysis(params: Dict[str, Any]):
             # Download results
             st.subheader("💾 Download Results")
 
+            # Build assets summary for JSON
+            assets_summary = [{"ticker": a["ticker"], "initial": a["initial"]} for a in assets]
+            ticker_filename = "_".join(a["ticker"] for a in assets)
+
             results_dict = {
-                "product_type": "worst_of_2_assets",
-                "ticker_a": ticker_a,
-                "ticker_b": ticker_b,
-                "initial_a": initial_a,
-                "initial_b": initial_b,
+                "product_type": f"worst_of_{num_assets}_assets",
+                "assets": assets_summary,
+                "ticker_a": assets[0]["ticker"],
+                "initial_a": assets[0]["initial"],
+                "ticker_b": assets[1]["ticker"],
+                "initial_b": assets[1]["initial"],
                 "parameters": params,
                 "observation_schedule": df_obs.to_dict(orient="records"),
                 "autocalled": autocalled,
@@ -2062,12 +2152,16 @@ def run_worst_of_analysis(params: Dict[str, Any]):
                     "return_pct": float(return_pct) if coupon_rate > 0 else None
                 }
             }
+            # Add Stock C to JSON when present
+            if num_assets >= 3:
+                results_dict["ticker_c"] = assets[2]["ticker"]
+                results_dict["initial_c"] = assets[2]["initial"]
 
             json_str = json.dumps(results_dict, indent=2, default=str)
             st.download_button(
                 label="📥 Download Worst-Of Analysis",
                 data=json_str,
-                file_name=f"worst_of_{ticker_a}_{ticker_b}_analysis_{dt.datetime.now().strftime('%Y%m%d')}.json",
+                file_name=f"worst_of_{ticker_filename}_analysis_{dt.datetime.now().strftime('%Y%m%d')}.json",
                 mime="application/json"
             )
 
